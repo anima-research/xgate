@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -19,6 +21,37 @@ from typing import Optional
 
 from . import config
 from .db import Repo
+
+ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _anthropic_transcribe(system: str, user_blocks: list, max_tokens: int = 1500) -> Optional[str]:
+    """Call the Anthropic Messages API over stdlib urllib (no SDK dependency, so
+    the bridge runs on a bare Python with no pip/venv — e.g. borgs). Returns the
+    concatenated text, or None on error."""
+    if not config.ANTHROPIC_KEY:
+        return None
+    body = json.dumps({
+        "model": config.TRANSCRIBE_MODEL,
+        "max_tokens": max_tokens,
+        "system": system,
+        "messages": [{"role": "user", "content": user_blocks}],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        ANTHROPIC_MESSAGES_URL, data=body, method="POST",
+        headers={
+            "x-api-key": config.ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            parsed = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    text = "".join(b.get("text", "") for b in parsed.get("content", []) if b.get("type") == "text")
+    return text.strip() or None
 
 _EXT = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp"}
 _MIME = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
@@ -42,7 +75,6 @@ class MediaStore:
     def __init__(self, repo: Optional[Repo] = None):
         self.repo = repo or Repo()
         config.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
-        self._client = None
 
     # ----- bytes -----
 
@@ -77,14 +109,6 @@ class MediaStore:
 
     # ----- transcription -----
 
-    def _anthropic(self):
-        if not config.TRANSCRIBE_ENABLED:
-            return None
-        if self._client is None:
-            import anthropic
-            self._client = anthropic.Anthropic(api_key=config.ANTHROPIC_KEY)
-        return self._client
-
     def transcribe_one(self, media_id: str, force: bool = False) -> Optional[str]:
         """Transcribe a single image (idempotent). Returns the transcription or None."""
         m = self.repo.get_media(media_id)
@@ -94,8 +118,7 @@ class MediaStore:
             return m["transcription"]
         if m.get("media_type") not in (None, "photo", "animated_gif"):
             return None  # only still images; video frames out of scope
-        client = self._anthropic()
-        if client is None:
+        if not config.TRANSCRIBE_ENABLED:
             return None
         path = self.ensure_bytes(media_id)
         if not path:
@@ -103,7 +126,7 @@ class MediaStore:
         import base64
         b64 = base64.standard_b64encode(path.read_bytes()).decode("ascii")
         mime = _media_mime(m.get("media_type"), path)
-        if mime not in _EXT and mime not in _EXT.values():
+        if mime not in _MIME.values():
             mime = "image/jpeg"
         ctx = self.repo.thread_context(m["tweet_id"], n=3)
         user_blocks = [
@@ -112,19 +135,10 @@ class MediaStore:
         if ctx:
             user_blocks.append({"type": "text", "text": f"Thread context:\n{ctx}"})
         user_blocks.append({"type": "text", "text": "Transcribe the image above."})
-        try:
-            resp = client.messages.create(
-                model=config.TRANSCRIBE_MODEL,
-                max_tokens=1500,
-                system=TRANSCRIBE_PROMPT,
-                messages=[{"role": "user", "content": user_blocks}],
-            )
-            text = "".join(b.text for b in resp.content if b.type == "text").strip()
-        except Exception:
-            return None
+        text = _anthropic_transcribe(TRANSCRIBE_PROMPT, user_blocks)
         if text:
             self.repo.set_transcription(media_id, text)
-        return text or None
+        return text
 
     def transcribe_many(self, media_ids: list[str], force: bool = False) -> dict[str, Optional[str]]:
         """Transcribe a batch concurrently, bounded by TRANSCRIBE_PARALLEL.
