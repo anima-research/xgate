@@ -84,7 +84,8 @@ export class BridgeError extends Error {
 }
 
 export class BridgeClient {
-  private readonly baseUrl: string;
+  /** Public so the SSE subscriber can derive the /stream URL from the same base. */
+  readonly baseUrl: string;
   private readonly timeoutMs: number;
 
   constructor(config: BridgeClientConfig) {
