@@ -192,6 +192,8 @@ export class XMcplServer {
     if (!result.ok) {
       return { content: [textContent(result.error ?? 'tool error')], isError: true };
     }
+    // Some tools (get_image) return ready content blocks (e.g. image blocks).
+    if (result.content) return { content: result.content };
     return { content: [textContent(JSON.stringify(result.data))] };
   }
 
@@ -241,6 +243,16 @@ export class XMcplServer {
 
   private pushIncoming(channelId: string, tweet: BridgeTweet): void {
     if (!this.conn || this.conn.isClosed) return;
+    // Text first, then any images as image blocks (uri the host can fetch from
+    // the bridge), each followed by its alt-text/transcription as text so a
+    // text-only bot still gets the content.
+    const content: ContentBlock[] = [textContent(tweet.text)];
+    for (const m of tweet.media ?? []) {
+      if (m.type && m.type !== 'photo' && m.type !== 'animated_gif') continue;
+      content.push({ type: 'image', uri: this.bridge.mediaUrl(m.media_id) } as ContentBlock);
+      const caption = m.alt_text || m.transcription;
+      if (caption) content.push(textContent(`[image] ${caption}`));
+    }
     const msg: ChannelsIncomingParams = {
       messages: [
         {
@@ -249,7 +261,7 @@ export class XMcplServer {
           threadId: tweet.conversation_id ?? undefined,
           author: { id: tweet.author_id ?? '', name: tweet.author_username ?? 'unknown' },
           timestamp: tweet.created_at ?? new Date(0).toISOString(),
-          content: [textContent(tweet.text)],
+          content,
           metadata: {
             url: tweet.author_username
               ? `https://x.com/${tweet.author_username}/status/${tweet.tweet_id}`

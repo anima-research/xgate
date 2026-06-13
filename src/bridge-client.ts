@@ -33,6 +33,7 @@ export interface BridgeMedia {
   width: number | null;
   height: number | null;
   transcription: string | null;
+  alt_text: string | null;
 }
 
 export interface BridgeUrl {
@@ -120,14 +121,35 @@ export class BridgeClient {
     return b;
   }
 
-  /** Single tweet. `fresh` forces a live refetch (costs money on the bridge). */
-  async getTweet(tweetId: string, fresh = false): Promise<BridgeTweet | null> {
-    return this.get<BridgeTweet>(`/tweet/${encodeURIComponent(tweetId)}${fresh ? '?fresh=1' : ''}`);
+  /** Single tweet. `fresh` forces a live refetch; `transcribe` transcribes its images. */
+  async getTweet(tweetId: string, fresh = false, transcribe = false): Promise<BridgeTweet | null> {
+    const params = new URLSearchParams();
+    if (fresh) params.set('fresh', '1');
+    if (transcribe) params.set('transcribe', '1');
+    const qs = params.toString() ? `?${params}` : '';
+    return this.get<BridgeTweet>(`/tweet/${encodeURIComponent(tweetId)}${qs}`);
   }
 
-  /** All cached tweets in a conversation, oldest-first. */
-  async getThread(conversationId: string): Promise<BridgeTweet[]> {
-    const r = await this.get<{ tweets: BridgeTweet[] }>(`/thread/${encodeURIComponent(conversationId)}`);
+  /** Stable URL for an image's original bytes (bridge caches + serves them). */
+  mediaUrl(mediaId: string): string {
+    return `${this.baseUrl}/media/${encodeURIComponent(mediaId)}`;
+  }
+
+  /** On-demand transcription of one image (Haiku on the bridge). null if unavailable. */
+  async transcribeImage(mediaId: string): Promise<string | null> {
+    const r = await this.get<{ transcription: string }>(
+      `/media/${encodeURIComponent(mediaId)}/transcription`,
+    );
+    return r?.transcription ?? null;
+  }
+
+  /** All cached tweets in a conversation, oldest-first. `transcribe` triggers a
+   *  bounded-parallel batch transcription of every image in the thread. */
+  async getThread(conversationId: string, transcribe = false): Promise<BridgeTweet[]> {
+    const qs = transcribe ? '?transcribe=1' : '';
+    const r = await this.get<{ tweets: BridgeTweet[] }>(
+      `/thread/${encodeURIComponent(conversationId)}${qs}`,
+    );
     return r?.tweets ?? [];
   }
 
@@ -137,9 +159,10 @@ export class BridgeClient {
   }
 
   /** Author timeline, newest-first. `before` is an ISO timestamp for paging. */
-  async userTimeline(handleOrId: string, limit = 50, before?: string): Promise<BridgeTweet[]> {
+  async userTimeline(handleOrId: string, limit = 50, before?: string, transcribe = false): Promise<BridgeTweet[]> {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (before) qs.set('before', before);
+    if (transcribe) qs.set('transcribe', '1');
     const r = await this.get<{ tweets: BridgeTweet[] }>(
       `/timeline/${encodeURIComponent(handleOrId)}?${qs.toString()}`,
     );

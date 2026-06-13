@@ -62,6 +62,8 @@ export function featureSetForTool(toolName: string): string | undefined {
     case 'get_user':
     case 'user_timeline':
     case 'search_tweets':
+    case 'get_image':
+    case 'transcribe_image':
       return 'x.read';
     case 'post_tweet':
     case 'reply_tweet':
