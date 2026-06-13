@@ -1,0 +1,11 @@
+# Secrets & data never belong in the repo (also gitignored within each component)
+**/.env
+bridge/x-cache.db
+bridge/x-cache.db-shm
+bridge/x-cache.db-wal
+bridge/media-cache/
+**/__pycache__/
+*.pyc
+mcpl/node_modules/
+mcpl/dist/
+*.tsbuildinfo
