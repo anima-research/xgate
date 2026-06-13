@@ -121,6 +121,50 @@ class Repo:
         finally:
             con.close()
 
+    def max_created_at(self, author_id: Optional[str], handle: str) -> Optional[str]:
+        """Newest cached tweet time for an author — the incremental fetch boundary."""
+        con = self._con()
+        try:
+            row = con.execute(
+                "SELECT MAX(created_at) AS m FROM tweets WHERE author_id = ? OR author_username = ?",
+                (author_id, handle.lstrip("@")),
+            ).fetchone()
+            return row["m"] if row else None
+        finally:
+            con.close()
+
+    def upsert_user(self, profile: dict) -> None:
+        """Persist an API user profile into the users table."""
+        pm = profile.get("public_metrics") or {}
+        con = self._con()
+        try:
+            con.execute(
+                "INSERT OR REPLACE INTO users "
+                "(author_id, handle, name, description, followers, following, tweet_count, "
+                " created_at, verified, location, url, fetched_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (profile.get("id"), profile.get("username"), profile.get("name"),
+                 profile.get("description"), pm.get("followers_count"), pm.get("following_count"),
+                 pm.get("tweet_count"), profile.get("created_at"),
+                 1 if profile.get("verified") else 0, profile.get("location"), profile.get("url"),
+                 _iso(_utcnow())),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def get_stored_user(self, handle_or_id: str) -> Optional[dict]:
+        """Return a persisted API profile (users table), if present."""
+        h = handle_or_id.lstrip("@")
+        con = self._con()
+        try:
+            row = con.execute(
+                "SELECT * FROM users WHERE handle = ? OR author_id = ?", (h, h)
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+
     def get_user(self, handle_or_id: str) -> Optional[dict]:
         """Profile derived from cached tweets. Full profile needs an API fetch
         (Phase 1+ once /users is wired); for now we return what the cache knows."""

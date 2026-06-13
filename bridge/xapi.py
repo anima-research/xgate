@@ -91,6 +91,30 @@ class XClient:
                 all_media[m["media_key"]] = m
         return {"tweets": all_tweets, "users": all_users, "media": all_media}
 
+    def user_by_username(self, username: str) -> dict:
+        """GET /2/users/by/username/:username — full profile (one user resource)."""
+        page = self._call(f"/users/by/username/{urllib.parse.quote(username.lstrip('@'))}", {
+            "user.fields": "username,name,description,created_at,public_metrics,verified,location,url",
+        }, kind="user")
+        return page.get("data", {})
+
+    def search_recent(self, query: str, max_results: int = 50, token: str = None):
+        """GET /2/tweets/search/recent — last 7 days. Returns (page, next_token).
+        May 403 on lower API tiers; callers should degrade gracefully."""
+        params = {
+            "query": query,
+            "max_results": str(max(10, min(max_results, 100))),
+            "tweet.fields": "created_at,conversation_id,referenced_tweets,entities,note_tweet,"
+                            "attachments,public_metrics,author_id",
+            "expansions": "author_id,attachments.media_keys",
+            "media.fields": "type,url,preview_image_url,width,height",
+            "user.fields": "username,name",
+        }
+        if token:
+            params["next_token"] = token
+        page = self._call("/tweets/search/recent", params, kind="search")
+        return page, page.get("meta", {}).get("next_token")
+
     def user_timeline(self, uid: str, start_time: str, end_time: str, token: str = None):
         """One page of a user's timeline. Returns (page, next_token)."""
         params = {

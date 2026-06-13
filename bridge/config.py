@@ -37,6 +37,10 @@ METRICS_TTL = int(os.environ.get("X_BRIDGE_METRICS_TTL", str(6 * 3600)))
 COLLECTION_TTL = int(os.environ.get("X_BRIDGE_COLLECTION_TTL", str(15 * 60)))
 NEGATIVE_TTL = int(os.environ.get("X_BRIDGE_NEGATIVE_TTL", str(24 * 3600)))
 
+# Poller cadence (seconds). The background poller refreshes each subscribed
+# resource at most this often; on-demand polls (SSE ?poll=force) bypass it.
+POLL_INTERVAL = float(os.environ.get("X_BRIDGE_POLL_INTERVAL", "60"))
+
 # --- Money safety ---
 # The bridge only spends on the X API when ALLOW_FETCH is truthy AND a bearer is
 # present. Default OFF: a cache miss costs nothing.

@@ -55,6 +55,41 @@ def insert_urls(cur: sqlite3.Cursor, t: dict) -> None:
                     (t["id"], u.get("url"), exp))
 
 
+def ingest_page(con: sqlite3.Connection, page: dict, source: str) -> list[str]:
+    """Ingest a raw timeline/search API page ({data, includes}). Idempotent.
+
+    Returns the list of tweet ids that were NEW to the cache (not present
+    before this call) — the poller uses this to decide what to fan out.
+    """
+    inc = page.get("includes", {}) or {}
+    users = {u["id"]: u for u in inc.get("users", [])}
+    media = {m["media_key"]: m for m in inc.get("media", [])}
+
+    # data tweets, plus any referenced tweets carried in includes.
+    tweets: dict[str, dict] = {}
+    for t in page.get("data", []) or []:
+        tweets[t["id"]] = t
+    for t in inc.get("tweets", []) or []:
+        tweets.setdefault(t["id"], t)
+    if not tweets:
+        return []
+
+    cur = con.cursor()
+    marks = ",".join("?" * len(tweets))
+    existing = {r[0] for r in cur.execute(
+        f"SELECT tweet_id FROM tweets WHERE tweet_id IN ({marks})", list(tweets)).fetchall()}
+    new_ids = [tid for tid in tweets if tid not in existing]
+
+    for tid, t in tweets.items():
+        uname = (users.get(t.get("author_id")) or {}).get("username", "")
+        insert_tweet(cur, t, uname, source)
+        insert_media(cur, t, media, source)
+        insert_urls(cur, t)
+    cur.execute("INSERT INTO tweets_fts(tweets_fts) VALUES('rebuild')")
+    con.commit()
+    return new_ids
+
+
 def ingest_lookup(con: sqlite3.Connection, result: dict, source: str) -> int:
     """Write a lookup_tweets() result ({tweets,users,media}) into the cache."""
     users, media = result.get("users", {}), result.get("media", {})

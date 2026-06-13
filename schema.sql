@@ -35,6 +35,24 @@ CREATE TABLE IF NOT EXISTS negative_cache (
     expires_at    TEXT
 );
 
+-- User profiles, API-backed (the /user endpoint falls back to deriving from
+-- tweets when a profile hasn't been fetched). fetched_at drives metric TTL.
+CREATE TABLE IF NOT EXISTS users (
+    author_id    TEXT PRIMARY KEY,
+    handle       TEXT,
+    name         TEXT,
+    description  TEXT,
+    followers    INTEGER,
+    following    INTEGER,
+    tweet_count  INTEGER,
+    created_at   TEXT,
+    verified     INTEGER,
+    location     TEXT,
+    url          TEXT,
+    fetched_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_users_handle ON users(handle);
+
 -- Per-call spend, tallied against the v2 price table.
 CREATE TABLE IF NOT EXISTS api_cost_ledger (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

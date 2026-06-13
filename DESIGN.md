@@ -106,18 +106,41 @@ GET  /stream/:resource  (SSE)         poll fan-out of new items   (Phase 3)
 
 ## Phased build
 
-1. **Bridge read path** ← *this scaffold*. HTTP read endpoints over a copy of
-   `archive.db`; freshness / negative-cache / cost-ledger tables; budget endpoint.
-   Testable with curl against the 27k seeded tweets, no spend.
-2. **x-mcpl read frontend** — clone discord-mcpl, swap adapter to the bridge HTTP
-   client, wire `x.read` tools + channels.
-3. **Polling + SSE notifications** — per-resource adaptive poller → SSE;
-   `x.notifications` channels with host-side cursors.
-4. **Posting** — `accounts` write-creds, OAuth user-context, `x.post` + rollback.
-5. **DMs / multi-account** — flip on the already-declared surfaces.
+1. ✅ **Bridge read path** — HTTP read endpoints over a copy of `archive.db`;
+   freshness / negative-cache / cost-ledger tables; budget endpoint. *Done,
+   live-tested.*
+2. ✅ **x-mcpl read frontend** — MCPL server mirroring discord-mcpl; bridge HTTP
+   adapter, `x.read` tools, channels. *Done; 13/13 tests over a real
+   McplConnection.*
+3. ✅ **Polling + SSE notifications** — per-resource adaptive poller (single
+   background thread, per-resource refresh lock), SSE `/stream/:resource`
+   fan-out, `x.notifications` channels delivering `channels/incoming`. Live
+   collection read-through (timeline/search) with freshness cursors + a `users`
+   table completes the three-tier freshness model. *Done; verified end-to-end
+   X→bridge→SSE→MCPL with real data.*
+4. ⏳ **Posting** — `accounts` write-creds, OAuth user-context, `x.post` +
+   rollback. *Declared, not wired — needs user-context write credentials.*
+5. ⏳ **DMs / multi-account** — flip on the already-declared surfaces.
+   *Declared, not wired — needs write credentials.*
+
+Phases 4–5 are intentionally left as declared-but-unwired MCPL surfaces: the
+app-only bearer used for reads cannot post or DM, and no user-context OAuth
+credential is available. The `accounts` table and `x.post`/`x.dm` feature sets
+are already shaped for them.
 
 Cache syndication (multi-host replication) stays a later concern; the repository
 layer keeps the SQLite→Postgres door open if it comes to that.
+
+## Concurrency & cost notes
+
+- **Single writer, per-resource refresh lock.** `Cache.refresh()` serializes by
+  `resource_key` and re-checks freshness under the lock, so a forced poll and the
+  background loop can never double-fetch (or double-emit) the same resource.
+- **Money safety holds with fetching on.** Collection reads do live read-through
+  only when stale (`COLLECTION_TTL` 15 min) and `ALLOW_FETCH` + bearer are set;
+  otherwise cache-only. Every spend lands in `api_cost_ledger` (`GET /budget`).
+- **Poller** runs one daemon thread, polling only resources with ≥1 live SSE
+  subscriber, at `X_BRIDGE_POLL_INTERVAL` (default 60s).
 
 ## Provenance
 
