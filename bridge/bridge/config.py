@@ -1,0 +1,69 @@
+"""Configuration — paths, TTLs, and money-safety flags, all env-overridable."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv(path: Path) -> None:
+    """Minimal .env loader (no dependency). Does not override real env vars."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k, v = k.strip(), v.strip().strip("'").strip('"')
+        os.environ.setdefault(k, v)
+
+
+_load_dotenv(REPO_ROOT / ".env")
+
+# Cache DB. Defaults to a copy living beside the repo — NOT the source
+# archive.db, which we never write to. Seed it with scripts/init_cache_db.py.
+CACHE_DB = Path(os.environ.get("X_BRIDGE_DB", str(REPO_ROOT / "x-cache.db")))
+
+# Source corpus used by the init script to seed the cache.
+SEED_DB = Path(os.environ.get("X_BRIDGE_SEED_DB", "/Users/antra/archivist/archive.db"))
+
+SCHEMA_SQL = REPO_ROOT / "schema.sql"
+
+# --- Freshness tiers (seconds) ---
+METRICS_TTL = int(os.environ.get("X_BRIDGE_METRICS_TTL", str(6 * 3600)))
+COLLECTION_TTL = int(os.environ.get("X_BRIDGE_COLLECTION_TTL", str(15 * 60)))
+NEGATIVE_TTL = int(os.environ.get("X_BRIDGE_NEGATIVE_TTL", str(24 * 3600)))
+
+# Poller cadence (seconds). The background poller refreshes each subscribed
+# resource at most this often; on-demand polls (SSE ?poll=force) bypass it.
+POLL_INTERVAL = float(os.environ.get("X_BRIDGE_POLL_INTERVAL", "60"))
+
+# --- Money safety ---
+# The bridge only spends on the X API when ALLOW_FETCH is truthy AND a bearer is
+# present. Default OFF: a cache miss costs nothing.
+ALLOW_FETCH = os.environ.get("X_BRIDGE_ALLOW_FETCH", "").lower() in ("1", "true", "yes")
+BEARER = os.environ.get("X_BRIDGE_BEARER") or os.environ.get("BEARER")
+
+# --- Server ---
+HOST = os.environ.get("X_BRIDGE_HOST", "127.0.0.1")
+PORT = int(os.environ.get("X_BRIDGE_PORT", "8810"))
+
+# X API v2 per-resource pricing (confirmed 2026-04), from twitter_backfill.py.
+PRICE = {"post": 0.005, "user": 0.010, "media": 0.005}
+API_BASE = "https://api.twitter.com/2"
+
+# --- Media ---
+# Cached image/video bytes live here (lazy-downloaded on first /media request).
+MEDIA_DIR = Path(os.environ.get("X_BRIDGE_MEDIA_DIR", str(REPO_ROOT / "media-cache")))
+
+# On-demand image transcription (vision). Gated on an Anthropic credential —
+# absent one, /media/:id/transcription degrades to a 503, like fetch-disabled.
+TRANSCRIBE_MODEL = os.environ.get("X_BRIDGE_TRANSCRIBE_MODEL", "claude-haiku-4-5")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+TRANSCRIBE_ENABLED = bool(ANTHROPIC_KEY)
+# Bounded concurrency for batch transcription — when a bot reads a whole thread,
+# all its untranscribed images are transcribed in parallel up to this many at once.
+TRANSCRIBE_PARALLEL = int(os.environ.get("X_BRIDGE_TRANSCRIBE_PARALLEL", "5"))
