@@ -25,6 +25,7 @@ export class SseSubscription {
     private readonly resourceKey: string,
     private readonly onTweet: (t: BridgeTweet) => void,
     private readonly onError?: (e: Error) => void,
+    private readonly authHeaders: Record<string, string> = {},
   ) {}
 
   /** Open the stream and pump events until stop() or the connection drops. */
@@ -45,7 +46,7 @@ export class SseSubscription {
       this.ctrl = new AbortController();
       try {
         const res = await fetch(url, {
-          headers: { Accept: 'text/event-stream' },
+          headers: { Accept: 'text/event-stream', ...this.authHeaders },
           signal: this.ctrl.signal,
         });
         if (!res.ok || !res.body) throw new Error(`stream ${this.resourceKey} -> HTTP ${res.status}`);

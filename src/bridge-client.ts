@@ -74,6 +74,8 @@ export interface BridgeClientConfig {
   baseUrl: string;
   /** Per-request timeout in ms (default 30000). */
   timeoutMs?: number;
+  /** Gate token — sent as `Authorization: Bearer <token>` when the bridge requires it. */
+  token?: string;
 }
 
 /** Thrown for non-2xx bridge responses (404 cache-miss is surfaced as null, not thrown). */
@@ -87,11 +89,19 @@ export class BridgeError extends Error {
 export class BridgeClient {
   /** Public so the SSE subscriber can derive the /stream URL from the same base. */
   readonly baseUrl: string;
+  /** Public so the SSE subscriber can send the same auth header. */
+  readonly token?: string;
   private readonly timeoutMs: number;
 
   constructor(config: BridgeClientConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
     this.timeoutMs = config.timeoutMs ?? 30_000;
+    this.token = config.token;
+  }
+
+  /** Auth headers for bridge requests (empty when no token configured). */
+  authHeaders(): Record<string, string> {
+    return this.token ? { Authorization: `Bearer ${this.token}` } : {};
   }
 
   /** Low-level GET returning parsed JSON, or null on 404 (cache miss). */
@@ -99,7 +109,10 @@ export class BridgeClient {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
-      const res = await fetch(`${this.baseUrl}${path}`, { signal: ctrl.signal });
+      const res = await fetch(`${this.baseUrl}${path}`, {
+        signal: ctrl.signal,
+        headers: this.authHeaders(),
+      });
       if (res.status === 404) return null;
       const body = await res.text();
       if (!res.ok) throw new BridgeError(res.status, body);

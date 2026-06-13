@@ -29,7 +29,7 @@ async function main(): Promise<void> {
 
   const baseUrl = process.env.X_BRIDGE_URL ?? 'http://127.0.0.1:8810';
   const backfillOnOpen = parseInt(process.env.X_BACKFILL ?? '0', 10) || 0;
-  const bridge = new BridgeClient({ baseUrl });
+  const bridge = new BridgeClient({ baseUrl, token: process.env.X_BRIDGE_TOKEN });
 
   // Fail fast if the bridge isn't reachable.
   try {
