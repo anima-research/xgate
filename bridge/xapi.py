@@ -80,7 +80,7 @@ class XClient:
                 "tweet.fields": "created_at,conversation_id,referenced_tweets,entities,note_tweet,"
                                 "attachments,public_metrics,author_id",
                 "expansions": "author_id,attachments.media_keys",
-                "media.fields": "type,url,preview_image_url,width,height",
+                "media.fields": "type,url,preview_image_url,width,height,alt_text",
                 "user.fields": "username,name",
             }, kind="lookup")
             for t in page.get("data", []):
@@ -107,7 +107,7 @@ class XClient:
             "tweet.fields": "created_at,conversation_id,referenced_tweets,entities,note_tweet,"
                             "attachments,public_metrics,author_id",
             "expansions": "author_id,attachments.media_keys",
-            "media.fields": "type,url,preview_image_url,width,height",
+            "media.fields": "type,url,preview_image_url,width,height,alt_text",
             "user.fields": "username,name",
         }
         if token:
@@ -122,7 +122,7 @@ class XClient:
             "tweet.fields": "created_at,conversation_id,referenced_tweets,in_reply_to_user_id,"
                             "entities,note_tweet,attachments,public_metrics,author_id",
             "expansions": "referenced_tweets.id,attachments.media_keys,author_id",
-            "media.fields": "type,url,preview_image_url,width,height",
+            "media.fields": "type,url,preview_image_url,width,height,alt_text",
             "user.fields": "username,name",
         }
         if token:

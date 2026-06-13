@@ -72,12 +72,13 @@ class Repo:
         ids = list(by_id)
         marks = ",".join("?" * len(ids))
         for m in con.execute(
-            f"SELECT media_id, tweet_id, media_url, media_type, width, height, transcription "
+            f"SELECT media_id, tweet_id, media_url, media_type, width, height, transcription, alt_text "
             f"FROM media WHERE tweet_id IN ({marks})", ids
         ):
             by_id[m["tweet_id"]]["media"].append({
                 "media_id": m["media_id"], "url": m["media_url"], "type": m["media_type"],
-                "width": m["width"], "height": m["height"], "transcription": m["transcription"],
+                "width": m["width"], "height": m["height"],
+                "transcription": m["transcription"], "alt_text": m["alt_text"],
             })
         for u in con.execute(
             f"SELECT tweet_id, url, expanded_url FROM tweet_urls WHERE tweet_id IN ({marks})", ids
@@ -208,15 +209,91 @@ class Repo:
         finally:
             con.close()
 
-    def search(self, query: str, limit: int = 50) -> list[dict]:
+    def search(self, query: str, limit: int = 50, include_media: bool = True) -> list[dict]:
+        """FTS over tweet text and (optionally) media transcriptions, merged."""
         con = self._con()
         try:
-            rows = con.execute(
+            limit = min(limit, 200)
+            seen: dict[str, dict] = {}
+            for r in con.execute(
                 "SELECT t.* FROM tweets t JOIN tweets_fts f ON f.tweet_id = t.tweet_id "
-                "WHERE tweets_fts MATCH ? ORDER BY rank LIMIT ?",
-                (query, min(limit, 200)),
+                "WHERE tweets_fts MATCH ? ORDER BY rank LIMIT ?", (query, limit),
+            ):
+                seen.setdefault(r["tweet_id"], self._tweet_row(r))
+            if include_media and len(seen) < limit:
+                for r in con.execute(
+                    "SELECT t.* FROM tweets t JOIN media m ON m.tweet_id = t.tweet_id "
+                    "JOIN media_fts f ON f.media_id = m.media_id AND f.tweet_id = m.tweet_id "
+                    "WHERE media_fts MATCH ? ORDER BY rank LIMIT ?", (query, limit),
+                ):
+                    seen.setdefault(r["tweet_id"], self._tweet_row(r))
+            return self._hydrate(con, list(seen.values())[:limit])
+        finally:
+            con.close()
+
+    # ----- media -----
+
+    def get_media(self, media_id: str) -> Optional[dict]:
+        con = self._con()
+        try:
+            r = con.execute(
+                "SELECT media_id, tweet_id, media_url, media_type, transcription, alt_text "
+                "FROM media WHERE media_id = ? LIMIT 1", (media_id,),
+            ).fetchone()
+            return dict(r) if r else None
+        finally:
+            con.close()
+
+    def set_transcription(self, media_id: str, text: str) -> None:
+        con = self._con()
+        try:
+            con.execute("UPDATE media SET transcription = ? WHERE media_id = ?", (text, media_id))
+            con.execute("INSERT INTO media_fts(media_fts) VALUES('rebuild')")
+            con.commit()
+        finally:
+            con.close()
+
+    def untranscribed_media(self, tweet_ids: list[str]) -> list[dict]:
+        """Media rows (with a URL) for these tweets that lack a transcription."""
+        if not tweet_ids:
+            return []
+        con = self._con()
+        try:
+            marks = ",".join("?" * len(tweet_ids))
+            rows = con.execute(
+                f"SELECT media_id, tweet_id, media_url, media_type FROM media "
+                f"WHERE tweet_id IN ({marks}) AND media_url IS NOT NULL "
+                f"AND (transcription IS NULL OR transcription = '')", tweet_ids,
             ).fetchall()
-            return self._hydrate(con, [self._tweet_row(r) for r in rows])
+            return [dict(r) for r in rows]
+        finally:
+            con.close()
+
+    def thread_context(self, tweet_id: str, n: int = 3) -> str:
+        """Render the n tweets before/after this one in its conversation, as
+        plain text — context for transcribing an image in a thread."""
+        con = self._con()
+        try:
+            row = con.execute(
+                "SELECT conversation_id, created_at FROM tweets WHERE tweet_id = ?", (tweet_id,)
+            ).fetchone()
+            if not row or not row["conversation_id"]:
+                return ""
+            cid, ts = row["conversation_id"], row["created_at"]
+            before = con.execute(
+                "SELECT created_at, author_username, full_text FROM tweets "
+                "WHERE conversation_id = ? AND created_at < ? ORDER BY created_at DESC LIMIT ?",
+                (cid, ts, n),
+            ).fetchall()
+            after = con.execute(
+                "SELECT created_at, author_username, full_text FROM tweets "
+                "WHERE conversation_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT ?",
+                (cid, ts, n),
+            ).fetchall()
+            lines = []
+            for r in list(reversed(before)) + list(after):
+                lines.append(f"@{r['author_username']}: {(r['full_text'] or '')[:280]}")
+            return "\n".join(lines)
         finally:
             con.close()
 

@@ -54,3 +54,16 @@ PORT = int(os.environ.get("X_BRIDGE_PORT", "8810"))
 # X API v2 per-resource pricing (confirmed 2026-04), from twitter_backfill.py.
 PRICE = {"post": 0.005, "user": 0.010, "media": 0.005}
 API_BASE = "https://api.twitter.com/2"
+
+# --- Media ---
+# Cached image/video bytes live here (lazy-downloaded on first /media request).
+MEDIA_DIR = Path(os.environ.get("X_BRIDGE_MEDIA_DIR", str(REPO_ROOT / "media-cache")))
+
+# On-demand image transcription (vision). Gated on an Anthropic credential —
+# absent one, /media/:id/transcription degrades to a 503, like fetch-disabled.
+TRANSCRIBE_MODEL = os.environ.get("X_BRIDGE_TRANSCRIBE_MODEL", "claude-haiku-4-5")
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+TRANSCRIBE_ENABLED = bool(ANTHROPIC_KEY)
+# Bounded concurrency for batch transcription — when a bot reads a whole thread,
+# all its untranscribed images are transcribed in parallel up to this many at once.
+TRANSCRIBE_PARALLEL = int(os.environ.get("X_BRIDGE_TRANSCRIBE_PARALLEL", "5"))

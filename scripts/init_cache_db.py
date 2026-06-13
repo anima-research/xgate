@@ -44,6 +44,12 @@ def main() -> None:
     print(f"applying {config.SCHEMA_SQL}")
     con = sqlite3.connect(str(cache))
     con.executescript(config.SCHEMA_SQL.read_text())
+
+    # Column migration: media.alt_text (the seed table predates it).
+    cols = {r[1] for r in con.execute("PRAGMA table_info(media)")}
+    if "alt_text" not in cols:
+        con.execute("ALTER TABLE media ADD COLUMN alt_text TEXT")
+        print("  + added media.alt_text column")
     con.commit()
     tables = [r[0] for r in con.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]

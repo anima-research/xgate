@@ -79,6 +79,30 @@ Existing tables kept as-is: `tweets`, `media`, `tweet_urls`, `tweets_fts`,
 - `api_cost_ledger(id PK, ts, endpoint, kind, posts, users, media, cost_usd,
   rate_limit, rate_remaining, rate_reset)`.
 
+## Media & images
+
+Parity with the archivist's media handling, plus surfacing images to bots:
+
+- **Metadata + alt_text** — `media.fields` requests `alt_text`; stored on the
+  `media` table (added by migration). Re-ingest UPSERTs but **preserves an
+  existing transcription** (never re-pays).
+- **Byte caching** — image bytes are lazy-downloaded from the X CDN on first
+  `GET /media/:id` and cached under `MEDIA_DIR`, then served with a stable URL
+  (survives CDN URL rot; repeat reads are free).
+- **Transcription** — on-demand via `claude-haiku-4-5` (configurable), with
+  thread context, idempotent (skip if present). A whole-thread read transcribes
+  **all** its images in one **bounded-parallel batch** (`TRANSCRIBE_PARALLEL`,
+  default 5) so a bot gets them together in a single tool call. Gated on an
+  Anthropic credential (`ANTHROPIC_API_KEY` in the bridge `.env`) — absent one,
+  transcription endpoints return 503 and reads still work without it.
+- **Search** — `/search` unions `tweets_fts` (text) and `media_fts`
+  (transcriptions), so an image's transcribed content is findable.
+- **MCPL surfacing** — `channels/incoming` and the `get_image` tool emit an
+  `image` content block (uri the host fetches from the bridge) **plus** the
+  alt-text/transcription as text, so vision-capable and text-only bots both get
+  the content. `transcribe_image` returns text only; read tools take a
+  `transcribe` flag.
+
 ## HTTP contract (bridge)
 
 ```

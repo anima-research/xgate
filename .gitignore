@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 x-cache.db
+media-cache/
 x-cache.db-shm
 x-cache.db-wal
 .env

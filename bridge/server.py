@@ -17,11 +17,16 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import config
 from .cache import Cache
 from .db import Repo
+from .media import MediaStore
 from .poller import Poller
 
 _repo = Repo()
 _cache = Cache(_repo)
 _poller = Poller(_cache)
+_media = MediaStore(_repo)
+
+MEDIA_BYTES_RE = re.compile(r"^/media/(?P<id>[\w-]+)/?$")
+MEDIA_TRANSCRIBE_RE = re.compile(r"^/media/(?P<id>[\w-]+)/transcription/?$")
 
 JSON_ROUTES = [
     ("GET", re.compile(r"^/health/?$"), "health"),
@@ -98,6 +103,16 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_stream(unquote(sm.group("resource")), qs)
             return
 
+        tm = MEDIA_TRANSCRIBE_RE.match(path)
+        if tm:
+            self._send(*self._h_transcription(tm.group("id"), qs))
+            return
+
+        bm = MEDIA_BYTES_RE.match(path)
+        if bm:
+            self._handle_media_bytes(bm.group("id"))
+            return
+
         for _method, pat, name in JSON_ROUTES:
             m = pat.match(path)
             if m:
@@ -115,21 +130,53 @@ class Handler(BaseHTTPRequestHandler):
         return 200, {
             "ok": True, "version": "0.1.0", "db": str(config.CACHE_DB),
             "allow_fetch": config.ALLOW_FETCH, "bearer_configured": bool(config.BEARER),
+            "transcribe_enabled": config.TRANSCRIBE_ENABLED,
+            "transcribe_model": config.TRANSCRIBE_MODEL,
             "active_streams": _poller.active_resources(), **_repo.counts(),
         }
+
+    # ----- media handlers -----
+
+    def _h_transcription(self, media_id: str, qs: dict):
+        if not config.TRANSCRIBE_ENABLED:
+            return 503, {"error": "transcription disabled (no Anthropic credential)", "media_id": media_id}
+        if not _repo.get_media(media_id):
+            return 404, {"error": "unknown media", "media_id": media_id}
+        text = _media.transcribe_one(media_id, force=_truthy(qs, "fresh"))
+        if text is None:
+            return 502, {"error": "transcription failed", "media_id": media_id}
+        return 200, {"media_id": media_id, "transcription": text}
+
+    def _handle_media_bytes(self, media_id: str) -> None:
+        served = _media.serve(media_id)
+        if not served:
+            self._send(404, {"error": "media not available", "media_id": media_id})
+            return
+        data, mime = served
+        self.send_response(200)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "public, max-age=86400")
+        self.end_headers()
+        self.wfile.write(data)
 
     def h_budget(self, m, qs):
         return 200, _repo.budget()
 
     def h_tweet(self, m, qs):
         t = _cache.get_tweet(m.group("id"), fresh=_truthy(qs, "fresh"))
-        return (200, t) if t else (404, {"cached": False, "tweet_id": m.group("id")})
+        if not t:
+            return 404, {"cached": False, "tweet_id": m.group("id")}
+        t = (self._maybe_transcribe([t], qs) or [t])[0]
+        return 200, t
 
     def h_thread(self, m, qs):
+        cid = m.group("cid")
         if _truthy(qs, "fresh"):
-            _cache.refresh(f"thread:{m.group('cid')}", force=True)
-        tweets = _repo.get_thread(m.group("cid"))
-        return 200, {"conversation_id": m.group("cid"), "count": len(tweets), "tweets": tweets}
+            _cache.refresh(f"thread:{cid}", force=True)
+        tweets = _repo.get_thread(cid)
+        tweets = self._maybe_transcribe(tweets, qs)
+        return 200, {"conversation_id": cid, "count": len(tweets), "tweets": tweets}
 
     def h_user(self, m, qs):
         u = _cache.get_user(unquote(m.group("handle")), fresh=_truthy(qs, "fresh"))
@@ -138,6 +185,7 @@ class Handler(BaseHTTPRequestHandler):
     def h_timeline(self, m, qs):
         who = unquote(m.group("who"))
         tweets = _cache.timeline(who, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"))
+        tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"who": who, "count": len(tweets), "tweets": tweets}
 
     def h_search(self, m, qs):
@@ -145,7 +193,24 @@ class Handler(BaseHTTPRequestHandler):
         if not q:
             return 400, {"error": "q (query) is required"}
         tweets = _cache.search(q, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"))
+        tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"query": q, "count": len(tweets), "tweets": tweets}
+
+    def _maybe_transcribe(self, tweets: list, qs: dict) -> list:
+        """If ?transcribe=1, transcribe all untranscribed images across the
+        result set in one bounded-parallel batch, then re-read so the returned
+        tweets carry their transcriptions."""
+        if not _truthy(qs, "transcribe") or not tweets:
+            return tweets
+        ids = [t["tweet_id"] for t in tweets]
+        if _media.transcribe_for_tweets(ids):
+            by_id = {t["tweet_id"]: t for t in tweets}
+            for tid in ids:
+                fresh = _repo.get_tweet(tid)
+                if fresh:
+                    by_id[tid] = fresh
+            return [by_id[tid] for tid in ids]
+        return tweets
 
     # ----- SSE stream -----
 

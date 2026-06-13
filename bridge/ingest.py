@@ -36,11 +36,18 @@ def insert_media(cur: sqlite3.Cursor, t: dict, media_by_key: dict, source: str) 
         if not m:
             continue
         url = m.get("url") or m.get("preview_image_url")
+        # UPSERT that preserves an existing transcription — re-ingesting a tweet
+        # (e.g. on re-poll) must not wipe a transcription we already paid for.
         cur.execute(
-            "INSERT OR REPLACE INTO media "
-            "(media_id, tweet_id, media_url, media_type, width, height, transcription, source) "
-            "VALUES (?,?,?,?,?,?,NULL,?)",
-            (mk, t["id"], url, m.get("type"), m.get("width"), m.get("height"), source),
+            "INSERT INTO media "
+            "(media_id, tweet_id, media_url, media_type, width, height, alt_text, source) "
+            "VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(media_id, tweet_id) DO UPDATE SET "
+            "  media_url=excluded.media_url, media_type=excluded.media_type, "
+            "  width=excluded.width, height=excluded.height, "
+            "  alt_text=COALESCE(excluded.alt_text, media.alt_text), source=excluded.source",
+            (mk, t["id"], url, m.get("type"), m.get("width"), m.get("height"),
+             m.get("alt_text"), source),
         )
 
 

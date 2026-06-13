@@ -35,7 +35,13 @@ curl -s localhost:8810/budget | python3 -m json.tool
 | `GET /timeline/:handle_or_id` | live read-through when stale; `?limit=` `?fresh=1` |
 | `GET /search?q=` | FTS5 over cache; live read-through when stale; `?fresh=1` |
 | `GET /stream/:resource` | **SSE** of new tweets for a resource (`timeline:<id>`, `search:<q>`, `thread:<cid>`). `?poll=1` polls-if-stale on connect |
+| `GET /media/:id` | original image bytes (lazy-downloaded from the X CDN, cached) |
+| `GET /media/:id/transcription` | on-demand Haiku transcription (`?fresh=1` to redo); 503 if no Anthropic key |
 | `GET /budget` | cost ledger summary |
+
+`/tweet`, `/thread`, `/timeline`, `/search` accept `?transcribe=1` to transcribe
+every image in the result set in one bounded-parallel batch before returning.
+`/search` also matches image transcriptions (`media_fts`).
 
 Resource keys for `/stream`: `timeline:<handleOrId>`, `search:<query>`,
 `thread:<conversationId>`. A background poller refreshes each subscribed
@@ -60,5 +66,7 @@ Otherwise a cache miss returns `404 {"cached": false}` and costs nothing.
 
 `X_BRIDGE_DB`, `X_BRIDGE_SEED_DB`, `X_BRIDGE_HOST`, `X_BRIDGE_PORT`,
 `X_BRIDGE_ALLOW_FETCH`, `X_BRIDGE_BEARER`, `X_BRIDGE_METRICS_TTL`,
-`X_BRIDGE_COLLECTION_TTL`, `X_BRIDGE_NEGATIVE_TTL`, `X_BRIDGE_POLL_INTERVAL`.
-A `.env` file beside the repo is auto-loaded (gitignored).
+`X_BRIDGE_COLLECTION_TTL`, `X_BRIDGE_NEGATIVE_TTL`, `X_BRIDGE_POLL_INTERVAL`,
+`X_BRIDGE_MEDIA_DIR`, `X_BRIDGE_TRANSCRIBE_MODEL`, `X_BRIDGE_TRANSCRIBE_PARALLEL`,
+`ANTHROPIC_API_KEY` (enables transcription). A `.env` file beside the repo is
+auto-loaded (gitignored).
