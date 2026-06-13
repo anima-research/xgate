@@ -221,6 +221,7 @@ export class XMcplServer {
         resourceKeyFor(addr),
         (tweet) => this.pushIncoming(descriptor.id, tweet),
         (e) => console.error(`[x-mcpl] stream ${descriptor.id} error:`, e.message),
+        this.bridge.authHeaders(),
       );
       sub.start();
       this.subscriptions.set(descriptor.id, sub);
