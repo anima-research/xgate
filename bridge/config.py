@@ -51,6 +51,12 @@ BEARER = os.environ.get("X_BRIDGE_BEARER") or os.environ.get("BEARER")
 HOST = os.environ.get("X_BRIDGE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("X_BRIDGE_PORT", "8810"))
 
+# Gate token. When set, every endpoint requires `Authorization: Bearer <token>`
+# EXCEPT GET /health (liveness) and GET /media/:id raw bytes (already-public
+# tweet images). Lets the bridge sit safely behind a public HTTPS vhost without
+# exposing the money/data endpoints. Unset = open (localhost-only deployments).
+GATE_TOKEN = os.environ.get("X_BRIDGE_TOKEN")
+
 # X API v2 per-resource pricing (confirmed 2026-04), from twitter_backfill.py.
 PRICE = {"post": 0.005, "user": 0.010, "media": 0.005}
 API_BASE = "https://api.twitter.com/2"

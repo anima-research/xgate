@@ -66,9 +66,24 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _authorized(self, path: str) -> bool:
+        """Gate check. Open when no token is configured; always allow /health and
+        raw /media/:id bytes; otherwise require the bearer token."""
+        if not config.GATE_TOKEN:
+            return True
+        if path == "/health" or path.rstrip("/") == "/health":
+            return True
+        if MEDIA_BYTES_RE.match(path) and not MEDIA_TRANSCRIBE_RE.match(path):
+            return True
+        auth = self.headers.get("Authorization", "")
+        return auth == f"Bearer {config.GATE_TOKEN}"
+
     def do_POST(self):  # noqa: N802
         # Test-only hook: delete an author's newest cached tweet and clear the
         # timeline freshness, so a subsequent poll re-discovers it deterministically.
+        if not self._authorized(urlparse(self.path).path):
+            self._send(401, {"error": "unauthorized"})
+            return
         m = re.match(r"^/__test_make_stale/(?P<id>\d+)/?$", urlparse(self.path).path)
         if not m:
             self._send(404, {"error": "no such route"})
@@ -97,6 +112,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         parsed = urlparse(self.path)
         path, qs = parsed.path, parse_qs(parsed.query)
+
+        if not self._authorized(path):
+            self._send(401, {"error": "unauthorized"})
+            return
 
         sm = STREAM_RE.match(path)
         if sm:
@@ -132,6 +151,7 @@ class Handler(BaseHTTPRequestHandler):
             "allow_fetch": config.ALLOW_FETCH, "bearer_configured": bool(config.BEARER),
             "transcribe_enabled": config.TRANSCRIBE_ENABLED,
             "transcribe_model": config.TRANSCRIBE_MODEL,
+            "auth_required": bool(config.GATE_TOKEN),
             "active_streams": _poller.active_resources(), **_repo.counts(),
         }
 
