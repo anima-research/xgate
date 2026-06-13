@@ -17,24 +17,36 @@ because the bridge is deliberately user-agnostic.
 | `feature-sets.ts` — `x.read` / `x.post` / `x.notifications` / `x.dm` | ✅ declared |
 | `tools.ts` — `x.read` tool schemas | ✅ done |
 | `handlers.ts` — tool dispatch → bridge | ✅ done (read tools), live-tested |
-| `server.ts` — `McplConnection` orchestrator (mirror discord-mcpl) | ⏳ next |
-| `channels.ts` — timeline/search/thread/mentions channels | ⏳ Phase 3 |
-| `index.ts` — CLI entry (stdio/tcp) | ⏳ next |
+| `server.ts` — `McplConnection` orchestrator (mirror discord-mcpl) | ✅ done |
+| `channels.ts` — timeline/search/thread/mentions channels | ✅ done |
+| `sse.ts` — bridge SSE subscription → `channels/incoming` | ✅ done, live e2e |
+| `index.ts` — CLI entry (stdio/tcp) | ✅ done |
+| `x.post` / `x.dm` tool handlers | ⏳ needs write credentials |
 
 ## Test
 
 ```bash
-# with the bridge running at http://127.0.0.1:8810
+# with the bridge running at http://127.0.0.1:8810 (allow_fetch=1 for live e2e)
 cd ../x-bridge && python3 -m bridge --port 8810 &
-cd ../x-mcpl && npm install && npm test    # 7/7; live tests skip if bridge is down
+cd ../x-mcpl && npm install && npm test    # 13/13; live tests skip if bridge is down
 ```
 
 `X_BRIDGE_URL` overrides the bridge location for the tests.
 
-## Next (Phase 2 finish + Phase 3)
+## Run it
 
-1. `server.ts` + `index.ts` — wire `handleToolCall` into an `McplConnection`
-   request loop (initialize handshake, `tools/list`, `tools/call`, feature-set
-   gating via `featureSetForTool` + `isEnabled`). Mirror `discord-mcpl/src/server.ts`.
-2. `channels.ts` — map timeline/search/thread/mentions onto MCPL channels.
-3. Bridge-side poller + SSE so notification channels push (Phase 3).
+```bash
+X_BRIDGE_URL=http://127.0.0.1:8810 X_BACKFILL=20 npm run start -- --tcp 9100
+```
+
+Opening an `x.timeline` / `x.search` / `x.thread` channel subscribes to the
+bridge's SSE stream; new tweets arrive as `channels/incoming`. Read/unread
+cursors are the host's to persist (the bridge stays user-agnostic).
+
+## Not wired: posting & DMs
+
+`x.post` and `x.dm` are declared feature sets with tool schemas, but their
+handlers are intentionally absent: the app-only read bearer cannot post or DM,
+and no user-context OAuth credential is available. Wiring them is a credentials
+task, not a code-architecture one — `accounts` (bridge) and the feature sets are
+already shaped for it.

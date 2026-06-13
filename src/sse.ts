@@ -38,7 +38,9 @@ export class SseSubscription {
   }
 
   private async run(): Promise<void> {
-    const url = `${this.baseUrl.replace(/\/+$/, '')}/stream/${encodeURIComponent(this.resourceKey)}`;
+    // poll=1 asks the bridge to poll-if-stale on connect, so opening a channel
+    // delivers current items at once (bounded by the bridge's freshness TTL).
+    const url = `${this.baseUrl.replace(/\/+$/, '')}/stream/${encodeURIComponent(this.resourceKey)}?poll=1`;
     while (!this.stopped) {
       this.ctrl = new AbortController();
       try {
