@@ -49,6 +49,33 @@ def test_missing_user_is_none():
     assert repo.get_user("___no_such_handle_xyz___") is None
 
 
+def test_thread_stats():
+    tl = repo.get_timeline("repligate", limit=1)
+    cid = tl[0]["conversation_id"]
+    if not cid:
+        return
+    s = repo.thread_stats(cid)
+    assert s["count"] >= 1
+    assert isinstance(s["participants"], list)
+    assert all("handle" in p and "count" in p for p in s["participants"])
+    assert s["first"] <= s["last"]
+    assert s["media_count"] >= 0
+
+
+def test_timeline_stats():
+    s = repo.timeline_stats("repligate")
+    assert s["handle"]
+    assert s["count"] > 0, "repligate should have cached tweets"
+    assert s["first"] <= s["last"]
+    assert s["media_count"] >= 0
+
+
+def test_timeline_stats_unknown_is_zero():
+    s = repo.timeline_stats("___no_such_handle_xyz___")
+    assert s["count"] == 0
+    assert s["media_count"] == 0
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

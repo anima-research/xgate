@@ -22,6 +22,18 @@ import type {
 
 import { BridgeClient } from '../src/bridge-client.js';
 import { XMcplServer } from '../src/server.js';
+import { featureSets } from '../src/feature-sets.js';
+
+// Invariant: host-managed state (`hostState: true`) is single-valued by protocol
+// (one unkeyed `params.state`), so x.feed must be the sole host-managed set.
+// Server-managed rollback sets (x.post/x.dm) are separate and may coexist — the
+// host is responsible for threading the host-managed set independently of them
+// (see firstStateful/getStatefulFeatureSet fixes in the hosts).
+test('x.feed is the sole host-managed (hostState) feature set', () => {
+  const hostManaged = featureSets.filter((f) => f.hostState);
+  assert.equal(hostManaged.length, 1, `expected one hostState set, got: ${hostManaged.map((f) => f.name).join(', ')}`);
+  assert.equal(hostManaged[0].name, 'x.feed');
+});
 
 const baseUrl = process.env.X_BRIDGE_URL ?? 'http://127.0.0.1:8810';
 const bridge = new BridgeClient({ baseUrl });
@@ -88,7 +100,10 @@ test('initialize advertises MCPL capabilities (channels, pushEvents, featureSets
     assert.equal(mcpl?.channels, true);
     assert.equal(mcpl?.pushEvents, true);
     assert.ok(mcpl?.featureSets?.some((f) => f.name === 'x.read'));
-    assert.ok(mcpl?.featureSets?.some((f) => f.name === 'x.notifications' && f.hostState === true));
+    // x.feed is the single host-managed (hostState) feature set.
+    assert.ok(mcpl?.featureSets?.some((f) => f.name === 'x.feed' && f.hostState === true));
+    // Exactly one hostState set (the host injects/records state for the first one).
+    assert.equal(mcpl?.featureSets?.filter((f) => f.hostState === true).length, 1);
   } finally {
     client.close(); tcpServer.close(); await serving.catch(() => {});
   }
@@ -117,9 +132,10 @@ test('live: tools/call user_timeline returns cached tweets', async (t) => {
   const serving = server.serve(serverConn);
   try {
     await handshake(client);
+    // format:'full' opts into the raw JSON object (default is compact text).
     const r = (await client.sendRequest('tools/call', {
       name: 'user_timeline',
-      arguments: { handle: 'repligate', limit: 3 },
+      arguments: { handle: 'repligate', limit: 3, format: 'full' },
     })) as { content: Array<{ type: string; text: string }>; isError?: boolean };
     assert.ok(!r.isError, 'tool call should succeed');
     const data = JSON.parse(r.content[0].text) as { count: number };

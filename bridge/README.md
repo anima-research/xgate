@@ -31,8 +31,10 @@ curl -s localhost:8810/budget | python3 -m json.tool
 | `GET /health` | counts, db path, fetch/bearer status, active streams |
 | `GET /tweet/:id` | `?fresh=1` forces a live refetch (needs fetch enabled) |
 | `GET /thread/:conversation_id` | cached thread; `?fresh=1` polls via recent search |
+| `GET /thread/:conversation_id/preview` | size, participants, span, image count, root author — **no bodies** |
 | `GET /user/:handle` | API-backed profile (`users` table); `?fresh=1` to refetch |
 | `GET /timeline/:handle_or_id` | live read-through when stale; `?limit=` `?fresh=1` |
+| `GET /timeline/:handle_or_id/preview` | cached count, span, last-tweet time, image count — **no bodies** |
 | `GET /search?q=` | FTS5 over cache; live read-through when stale; `?fresh=1` |
 | `GET /stream/:resource` | **SSE** of new tweets for a resource (`timeline:<id>`, `search:<q>`, `thread:<cid>`). `?poll=1` polls-if-stale on connect |
 | `GET /media/:id` | original image bytes (lazy-downloaded from the X CDN, cached) |

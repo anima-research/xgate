@@ -32,7 +32,9 @@ JSON_ROUTES = [
     ("GET", re.compile(r"^/health/?$"), "health"),
     ("GET", re.compile(r"^/budget/?$"), "budget"),
     ("GET", re.compile(r"^/tweet/(?P<id>\d+)/?$"), "tweet"),
+    ("GET", re.compile(r"^/thread/(?P<cid>\d+)/preview/?$"), "thread_preview"),
     ("GET", re.compile(r"^/thread/(?P<cid>\d+)/?$"), "thread"),
+    ("GET", re.compile(r"^/timeline/(?P<who>[^/]+)/preview/?$"), "timeline_preview"),
     ("GET", re.compile(r"^/user/(?P<handle>[^/]+)/?$"), "user"),
     ("GET", re.compile(r"^/timeline/(?P<who>[^/]+)/?$"), "timeline"),
     ("GET", re.compile(r"^/search/?$"), "search"),
@@ -197,6 +199,21 @@ class Handler(BaseHTTPRequestHandler):
         tweets = _repo.get_thread(cid)
         tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"conversation_id": cid, "count": len(tweets), "tweets": tweets}
+
+    def h_thread_preview(self, m, qs):
+        cid = m.group("cid")
+        if _truthy(qs, "fresh"):
+            _cache.refresh(f"thread:{cid}", force=True)
+        stats = _repo.thread_stats(cid)
+        if not stats["count"]:
+            return 404, {"cached": False, "conversation_id": cid}
+        return 200, stats
+
+    def h_timeline_preview(self, m, qs):
+        who = unquote(m.group("who"))
+        if _truthy(qs, "fresh"):
+            _cache.timeline(who, limit=_int(qs, "limit", 50), fresh=True)
+        return 200, _repo.timeline_stats(who)
 
     def h_user(self, m, qs):
         u = _cache.get_user(unquote(m.group("handle")), fresh=_truthy(qs, "fresh"))

@@ -188,4 +188,34 @@ export class BridgeClient {
     const r = await this.get<{ tweets: BridgeTweet[] }>(`/search?${qs.toString()}`);
     return r?.tweets ?? [];
   }
+
+  /** Cheap thread summary (size, participants, span, image count) — no bodies. */
+  async threadPreview(conversationId: string): Promise<BridgeThreadPreview | null> {
+    return this.get<BridgeThreadPreview>(`/thread/${encodeURIComponent(conversationId)}/preview`);
+  }
+
+  /** Cheap timeline summary for an author — no bodies. */
+  async timelinePreview(handleOrId: string): Promise<BridgeTimelinePreview | null> {
+    return this.get<BridgeTimelinePreview>(`/timeline/${encodeURIComponent(handleOrId)}/preview`);
+  }
+}
+
+export interface BridgeThreadPreview {
+  conversation_id: string;
+  count: number;
+  participants: { handle: string; count: number }[];
+  first: string | null;
+  last: string | null;
+  media_count: number;
+  root_author: string | null;
+}
+
+export interface BridgeTimelinePreview {
+  handle: string;
+  author_id: string | null;
+  count: number;
+  first: string | null;
+  last: string | null;
+  last_tweet_at: string | null;
+  media_count: number;
 }

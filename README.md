@@ -13,8 +13,10 @@ frontend.
   Full architecture and decisions in [`bridge/DESIGN.md`](./bridge/DESIGN.md).
 - **[`mcpl/`](./mcpl)** — the per-bot MCPL frontend (TypeScript), mirroring
   `discord-mcpl`. Talks to the bridge over HTTP/SSE; exposes `x.read` tools and
-  channels, surfaces images to bots. Depends on `@connectome/mcpl-core` from the
-  connectome workspace.
+  channels, surfaces images to bots, renders results as compact readable text,
+  and gives long-lived agents a **persistent curated feed** (`x.feed`) plus
+  `peek_*` previews. Depends on `@connectome/mcpl-core` from the connectome
+  workspace.
 
 ```
   bot ──► mcpl frontend (stateful) ──HTTP/SSE──► bridge ──► X API v2
@@ -25,7 +27,10 @@ frontend.
 ## Status
 
 - ✅ Read path, live read-through, three-tier freshness, negative cache, cost ledger
+- ✅ Preview endpoints (`/thread/:id/preview`, `/timeline/:who/preview`) — counts,
+  participants, span, image counts without bodies
 - ✅ Per-resource poller + SSE notifications (`x.notifications` channels)
+- ✅ Persistent curated feed (`x.feed`), host-state-backed, survives restarts
 - ✅ Image handling: alt-text, byte caching, `media_fts` search, bounded-parallel
   Haiku transcription, MCPL image blocks + `get_image` / `transcribe_image`
 - ⏳ Posting & DMs — declared MCPL surfaces (`x.post` / `x.dm`), not wired

@@ -8,6 +8,13 @@
 
 import type { FeatureSetDeclaration } from '@connectome/mcpl-core';
 
+// State model: `hostState: true` is HOST-managed (the host stores full state and
+// injects it as `params.state`) and is single-valued by protocol — so x.feed is
+// the one host-managed set. `rollback: true` (with hostState:false) is
+// SERVER-managed: the host only tracks opaque checkpoint ids for undo. x.post /
+// x.dm are server-managed. Hosts must thread the HOST-managed set for `state`
+// independently of any server-managed sets (see the firstStateful/getStateful
+// fixes in mcpl-harness + agent-framework).
 export const featureSets: FeatureSetDeclaration[] = [
   {
     name: 'x.read',
@@ -22,23 +29,34 @@ export const featureSets: FeatureSetDeclaration[] = [
     name: 'x.post',
     description: 'Post tweets, replies, and quotes (Phase 4).',
     uses: ['tools', 'channels.publish'],
-    rollback: true,
+    rollback: true, // server-managed undo (wired in Phase 4)
     hostState: false,
   },
   {
     name: 'x.notifications',
     description:
       'Subscribe to timelines / searches / threads / mentions as channels; the bridge ' +
-      'polls per-resource and pushes new items. Read cursors are persisted host-side.',
+      'polls per-resource and pushes new items live. For durable, cursor-tracked ' +
+      'catch-up use x.feed instead.',
     uses: ['tools'],
     rollback: false,
+    hostState: false,
+  },
+  {
+    name: 'x.feed',
+    description:
+      'A persistent, self-curated feed. Add/remove sources (user timelines, searches, ' +
+      'mentions), see per-source unread counts, and pull durable catch-up that advances ' +
+      'read cursors. State is host-persisted and survives restarts.',
+    uses: ['tools'],
+    rollback: true,
     hostState: true,
   },
   {
     name: 'x.dm',
     description: 'Direct messages (declared now, wired in Phase 5; needs per-account OAuth).',
     uses: ['tools'],
-    rollback: true,
+    rollback: true, // server-managed undo (wired in Phase 5)
     hostState: false,
   },
 ];
@@ -64,7 +82,16 @@ export function featureSetForTool(toolName: string): string | undefined {
     case 'search_tweets':
     case 'get_image':
     case 'transcribe_image':
+    case 'peek_thread':
+    case 'peek_timeline':
       return 'x.read';
+    case 'feed_show':
+    case 'feed_add':
+    case 'feed_remove':
+    case 'feed_mute':
+    case 'feed_unmute':
+    case 'feed_read':
+      return 'x.feed';
     case 'post_tweet':
     case 'reply_tweet':
     case 'quote_tweet':

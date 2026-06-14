@@ -38,7 +38,7 @@ import type {
 
 import type { BridgeClient, BridgeTweet } from './bridge-client.js';
 import { toolDefinitions } from './tools.js';
-import { handleToolCall } from './handlers.js';
+import { handleToolCall, type ToolStateCheckpoint } from './handlers.js';
 import { featureSets, featureSetForTool, isEnabled } from './feature-sets.js';
 import {
   ChannelManager,
@@ -140,7 +140,11 @@ export class XMcplServer {
         case 'tools/call':
           conn.sendResponse(
             req.id,
-            await this.handleToolCall(params.name as string, (params.arguments ?? {}) as Record<string, unknown>),
+            await this.handleToolCall(
+              params.name as string,
+              (params.arguments ?? {}) as Record<string, unknown>,
+              params.state, // host-injected state for stateful (x.feed) tools
+            ),
           );
           break;
         case method.CHANNELS_LIST:
@@ -183,18 +187,23 @@ export class XMcplServer {
   private async handleToolCall(
     name: string,
     args: Record<string, unknown>,
-  ): Promise<{ content: ContentBlock[]; isError?: boolean }> {
+    injectedState?: unknown,
+  ): Promise<{ content: ContentBlock[]; isError?: boolean; state?: ToolStateCheckpoint }> {
     const fs = featureSetForTool(name);
     if (fs && this.mcplEnabled && !isEnabled(fs, this.enabledFeatureSets)) {
       return { content: [textContent(`Feature set '${fs}' is not enabled`)], isError: true };
     }
-    const result = await handleToolCall(this.bridge, name, args);
+    const result = await handleToolCall(this.bridge, name, args, injectedState);
     if (!result.ok) {
       return { content: [textContent(result.error ?? 'tool error')], isError: true };
     }
+    // A stateful (x.feed) tool may return a checkpoint for the host to persist.
+    const stateField = result.state ? { state: result.state } : {};
     // Some tools (get_image) return ready content blocks (e.g. image blocks).
-    if (result.content) return { content: result.content };
-    return { content: [textContent(JSON.stringify(result.data))] };
+    if (result.content) return { content: result.content, ...stateField };
+    // Prefer the tool's compact rendering; fall back to raw JSON.
+    const text = result.text ?? JSON.stringify(result.data);
+    return { content: [textContent(text)], ...stateField };
   }
 
   // ── Channels ──
@@ -261,7 +270,9 @@ export class XMcplServer {
           messageId: tweet.tweet_id,
           threadId: tweet.conversation_id ?? undefined,
           author: { id: tweet.author_id ?? '', name: tweet.author_username ?? 'unknown' },
-          timestamp: tweet.created_at ?? new Date(0).toISOString(),
+          // Fall back to the current time (not the 1970 epoch) when a tweet has
+          // no timestamp, so undated items don't sort to the beginning of time.
+          timestamp: tweet.created_at ?? new Date().toISOString(),
           content,
           metadata: {
             url: tweet.author_username
@@ -270,7 +281,7 @@ export class XMcplServer {
             reply_to: tweet.reply_to_tweet_id,
             retweet_count: tweet.retweet_count,
             favorite_count: tweet.favorite_count,
-            media: tweet.media,
+            // (media is already delivered as image blocks in `content`; not duplicated here)
           },
         },
       ],

@@ -10,6 +10,13 @@ Caddy here is the **snap** build (config `/var/snap/caddy/common/caddy.json`,
 root-owned; Caddyfile at `/etc/caddy/Caddyfile`). Durable changes need `sudo`.
 Pick one option, add the block, and reload.
 
+> **Deployed reality (2026-06-14):** the live config uses **Option A** — the
+> dedicated subdomain. The working endpoint is **`https://xgate.animalabs.ai`**.
+> The `borgs.animalabs.ai` 443 vhost has **no `/xgate/*` route**, so
+> `https://borgs.animalabs.ai/xgate/...` is NOT the bridge — it falls through to
+> the catch-all backend (`localhost:3306`) and returns `403 "Invalid bearer
+> token"`. Point clients at the subdomain, not the path.
+
 ## Option A — dedicated subdomain (recommended)
 
 1. Add a public DNS record: `xgate.animalabs.ai  A  15.204.5.179`.
@@ -57,7 +64,9 @@ Endpoint: `https://borgs.animalabs.ai:3851`. Needs the port open in the firewall
 
 ## Client config (x-mcpl)
 
-Point the frontend at the chosen URL and give it the token:
+Point the frontend at the chosen URL and give it the token. The deployed URL is
+the **subdomain** (`https://xgate.animalabs.ai`) — do NOT use
+`https://borgs.animalabs.ai/xgate`, which misroutes (see the note up top):
 
 ```bash
 X_BRIDGE_URL=https://xgate.animalabs.ai \

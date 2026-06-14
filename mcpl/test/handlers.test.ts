@@ -38,6 +38,16 @@ test('every tool definition routes to a feature set', () => {
   }
 });
 
+test('every tool is tagged with its featureSet in tools/list (so hosts never guess)', () => {
+  for (const t of toolDefinitions) {
+    assert.equal(
+      (t as { featureSet?: string }).featureSet,
+      featureSetForTool(t.name),
+      `tool ${t.name} must carry a featureSet tag matching featureSetForTool`,
+    );
+  }
+});
+
 test('live: health reports a seeded cache', async (t) => {
   if (!(await bridgeUp())) return t.skip('bridge not reachable');
   const h = await bridge.health();
@@ -57,6 +67,25 @@ test('live: search via handler', async (t) => {
   if (!(await bridgeUp())) return t.skip('bridge not reachable');
   const r = await handleToolCall(bridge, 'search_tweets', { query: 'consciousness', limit: 2 });
   assert.ok(r.ok, r.error);
+});
+
+test('output contract: compact text by default, raw JSON on format:full', async () => {
+  // Stub bridge (no network) returning one tweet, so this runs without a seed.
+  const tweet = {
+    tweet_id: '5', author_id: 'a', author_username: 'alice', text: 'hello',
+    created_at: '2026-06-14T00:00:00Z', reply_to_tweet_id: null, reply_to_username: null,
+    conversation_id: '5', retweet_count: 0, favorite_count: 0, source: null, media: [], urls: [],
+  };
+  const stub = { async userTimeline() { return [tweet]; } } as unknown as Parameters<typeof handleToolCall>[0];
+
+  const compact = await handleToolCall(stub, 'user_timeline', { handle: 'alice' });
+  assert.ok(compact.text, 'compact mode sets rendered text');
+  assert.match(compact.text!, /@alice/);
+  assert.throws(() => JSON.parse(compact.text!), 'compact text is not JSON');
+
+  const full = await handleToolCall(stub, 'user_timeline', { handle: 'alice', format: 'full' });
+  assert.equal(full.text, undefined, 'full mode leaves text unset so the server emits JSON');
+  assert.equal((full.data as { count: number }).count, 1);
 });
 
 test('live: get_user derives a profile', async (t) => {

@@ -390,3 +390,78 @@ class Repo:
             return {"tweets": tweets, "media": media}
         finally:
             con.close()
+
+    # ----- previews (cheap aggregates, no bodies) -----
+
+    def thread_stats(self, conversation_id: str) -> dict:
+        """Summarize a cached thread without returning tweet bodies: size,
+        participants (by tweet count), time span, image count, root author."""
+        con = self._con()
+        try:
+            rows = con.execute(
+                "SELECT author_username AS handle, COUNT(*) AS n "
+                "FROM tweets WHERE conversation_id = ? "
+                "GROUP BY author_username ORDER BY n DESC",
+                (conversation_id,),
+            ).fetchall()
+            participants = [
+                {"handle": r["handle"], "count": r["n"]} for r in rows if r["handle"]
+            ]
+            count = sum(r["n"] for r in rows)
+            span = con.execute(
+                "SELECT MIN(created_at) AS first, MAX(created_at) AS last "
+                "FROM tweets WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            media_count = con.execute(
+                "SELECT COUNT(*) AS n FROM media m JOIN tweets t ON t.tweet_id = m.tweet_id "
+                "WHERE t.conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()["n"]
+            root = con.execute(
+                "SELECT author_username FROM tweets "
+                "WHERE conversation_id = ? AND (tweet_id = ? OR reply_to_tweet_id IS NULL) "
+                "ORDER BY created_at ASC LIMIT 1",
+                (conversation_id, conversation_id),
+            ).fetchone()
+            return {
+                "conversation_id": conversation_id,
+                "count": count,
+                "participants": participants,
+                "first": span["first"] if span else None,
+                "last": span["last"] if span else None,
+                "media_count": media_count,
+                "root_author": root["author_username"] if root else None,
+            }
+        finally:
+            con.close()
+
+    def timeline_stats(self, handle_or_id: str) -> dict:
+        """Summarize what we have cached for an author's timeline."""
+        h = handle_or_id.lstrip("@")
+        author_id = h if h.isdigit() else self.resolve_handle(h)
+        con = self._con()
+        try:
+            row = con.execute(
+                "SELECT author_id, author_username, COUNT(*) AS n, "
+                "MIN(created_at) AS first, MAX(created_at) AS last "
+                "FROM tweets WHERE author_id = ? OR author_username = ? "
+                "GROUP BY author_id, author_username ORDER BY n DESC LIMIT 1",
+                (author_id, h),
+            ).fetchone()
+            media_count = con.execute(
+                "SELECT COUNT(*) AS n FROM media m JOIN tweets t ON t.tweet_id = m.tweet_id "
+                "WHERE t.author_id = ? OR t.author_username = ?",
+                (author_id, h),
+            ).fetchone()["n"]
+            return {
+                "handle": (row["author_username"] if row else None) or h,
+                "author_id": row["author_id"] if row else author_id,
+                "count": row["n"] if row else 0,
+                "first": row["first"] if row else None,
+                "last": row["last"] if row else None,
+                "last_tweet_at": row["last"] if row else None,
+                "media_count": media_count,
+            }
+        finally:
+            con.close()

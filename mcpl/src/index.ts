@@ -40,6 +40,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Readiness: /health is UNauthenticated, so it can't catch a misrouted URL or a
+  // missing/invalid token — those would silently 401/403 every read while the
+  // frontend looks "connected". Probe one authenticated endpoint and fail loudly.
+  try {
+    await bridge.budget();
+  } catch (e) {
+    console.error(
+      `[x-mcpl] bridge reachable but an authenticated request failed: ${(e as Error).message}\n` +
+      `         Check X_BRIDGE_URL and X_BRIDGE_TOKEN. The URL must point directly at the\n` +
+      `         bridge vhost — for borgs that is https://xgate.animalabs.ai (NOT\n` +
+      `         https://borgs.animalabs.ai/xgate, which misroutes to another service).`,
+    );
+    process.exit(1);
+  }
+
   const makeServer = () => new XMcplServer(bridge, { backfillOnOpen });
 
   if (useStdio) {

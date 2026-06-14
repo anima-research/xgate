@@ -5,19 +5,37 @@ Per-bot MCPL frontend for X/Twitter. A thin, stateful driver that talks to the
 [`discord-mcpl`](../discord-mcpl).
 
 The bridge owns the cache, the token, the cost budget, and the poller. This
-package translates MCPL tool calls / channels into bridge requests. Read/unread
-and notification cursors live in host-persisted MCPL state (`hostState: true`),
-because the bridge is deliberately user-agnostic.
+package translates MCPL tool calls / channels into bridge requests, and renders
+results as compact, readable text (pass `format:"full"` on a read tool for the
+raw JSON object).
+
+For long-lived agents it also exposes a **persistent curated feed** (`x.feed`):
+add/remove sources (timelines, searches, mentions), see per-source unread counts,
+and pull durable, cursor-tracked catch-up. `feed_add` primes a source (fetches its
+recent tweets, cache-first) so the feed isn't empty and reports how many are
+available; `feed_read` defaults to unread catch-up (advances cursors) but takes
+`unread_only:false` to browse the latest regardless of read state without touching
+cursors. The feed's state is host-persisted and
+survives restarts via the MCPL host-managed-state mechanism — the host injects the
+current state into every `tools/call` as `params.state` and persists the `state`
+checkpoint a feed tool returns (agent-framework's `CheckpointManager` → Chronicle).
+Because the host injects/records state for a single feature set per server, `x.feed`
+is the only `hostState: true` set; the bridge stays deliberately user-agnostic.
+
+To preview before you pay to open: `peek_thread` / `peek_timeline` return size,
+participants, time span and image counts without fetching bodies.
 
 ## Status
 
 | Piece | State |
 |-------|-------|
-| `bridge-client.ts` — typed HTTP client over the bridge | ✅ done, live-tested |
-| `feature-sets.ts` — `x.read` / `x.post` / `x.notifications` / `x.dm` | ✅ declared |
-| `tools.ts` — `x.read` tool schemas | ✅ done |
-| `handlers.ts` — tool dispatch → bridge | ✅ done (read tools), live-tested |
-| `server.ts` — `McplConnection` orchestrator (mirror discord-mcpl) | ✅ done |
+| `bridge-client.ts` — typed HTTP client over the bridge (+ preview wrappers) | ✅ done, live-tested |
+| `feature-sets.ts` — `x.read` / `x.feed` / `x.notifications` / `x.post` / `x.dm` | ✅ declared |
+| `tools.ts` — `x.read` + `peek_*` + `x.feed` tool schemas | ✅ done |
+| `render.ts` — compact tweet/list/preview rendering | ✅ done, unit-tested |
+| `feed.ts` — pure feed reducer + renderer (host-state backed) | ✅ done, unit-tested |
+| `handlers.ts` — tool dispatch → bridge (read, peek, feed) | ✅ done, live-tested |
+| `server.ts` — `McplConnection` orchestrator; threads host state through tools | ✅ done |
 | `channels.ts` — timeline/search/thread/mentions channels | ✅ done |
 | `sse.ts` — bridge SSE subscription → `channels/incoming` | ✅ done, live e2e |
 | `index.ts` — CLI entry (stdio/tcp) | ✅ done |
@@ -40,8 +58,10 @@ X_BRIDGE_URL=http://127.0.0.1:8810 X_BACKFILL=20 npm run start -- --tcp 9100
 ```
 
 Opening an `x.timeline` / `x.search` / `x.thread` channel subscribes to the
-bridge's SSE stream; new tweets arrive as `channels/incoming`. Read/unread
-cursors are the host's to persist (the bridge stays user-agnostic).
+bridge's SSE stream; new tweets arrive live as `channels/incoming` (ambient
+awareness, no cursor). For durable, cursor-tracked catch-up that won't resurface
+what you've read, use the `x.feed` tools (`feed_add`, `feed_show`, `feed_read`)
+instead — those persist host-side.
 
 ## Not wired: posting & DMs
 
