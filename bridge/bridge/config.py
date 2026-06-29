@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import threading
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -73,3 +75,105 @@ TRANSCRIBE_ENABLED = bool(ANTHROPIC_KEY)
 # Bounded concurrency for batch transcription — when a bot reads a whole thread,
 # all its untranscribed images are transcribed in parallel up to this many at once.
 TRANSCRIBE_PARALLEL = int(os.environ.get("X_BRIDGE_TRANSCRIBE_PARALLEL", "5"))
+
+# --- Multi-token access ---
+# The owner token (GATE_TOKEN, above) has full access — including live X fetch and
+# transcription, subject to ALLOW_FETCH. Additional per-consumer tokens live in a
+# JSON file so they can be added/revoked without code changes (hot-reloaded on
+# mtime change). Shape: [{"token": "...", "label": "alice-bot", "allow_fetch": false}]
+# `allow_fetch` defaults to FALSE → cache-only: the consumer reads the existing
+# cache but cannot trigger any new X API or transcription spend.
+TOKENS_FILE = Path(os.environ.get("X_BRIDGE_TOKENS_FILE", str(REPO_ROOT / "tokens.json")))
+
+
+class TokenInfo:
+    """A resolved caller identity + its spend policy."""
+    __slots__ = ("label", "allow_fetch")
+
+    def __init__(self, label: str, allow_fetch: bool):
+        self.label = label
+        self.allow_fetch = allow_fetch
+
+
+class _TokenRegistry:
+    """Owner token (env) + per-consumer tokens (JSON file, hot-reloaded)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._file_tokens: dict[str, TokenInfo] = {}
+        self._mtime: float | None = None
+
+    def _reload_if_changed(self) -> None:
+        try:
+            mtime = TOKENS_FILE.stat().st_mtime
+        except OSError:
+            if self._file_tokens:
+                self._file_tokens = {}
+            self._mtime = None
+            return
+        if mtime == self._mtime:
+            return
+        try:
+            raw = json.loads(TOKENS_FILE.read_text())
+        except (OSError, ValueError):
+            return  # keep the previous good set on a read/parse error
+        entries = raw if isinstance(raw, list) else raw.get("tokens", [])
+        toks: dict[str, TokenInfo] = {}
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            tok = (e.get("token") or "").strip()
+            if not tok:
+                continue
+            toks[tok] = TokenInfo(e.get("label") or "unnamed", bool(e.get("allow_fetch", False)))
+        self._file_tokens = toks
+        self._mtime = mtime
+
+    def resolve(self, bearer: str) -> TokenInfo | None:
+        """Map a bearer value to its TokenInfo, or None if it is not valid."""
+        if GATE_TOKEN and bearer == GATE_TOKEN:
+            return TokenInfo("owner", True)
+        with self._lock:
+            self._reload_if_changed()
+            return self._file_tokens.get(bearer)
+
+    def any_configured(self) -> bool:
+        with self._lock:
+            self._reload_if_changed()
+            return bool(GATE_TOKEN) or bool(self._file_tokens)
+
+    def count(self) -> int:
+        """Number of per-consumer (file) tokens — excludes the owner token."""
+        with self._lock:
+            self._reload_if_changed()
+            return len(self._file_tokens)
+
+
+TOKENS = _TokenRegistry()
+
+# --- Per-request context (thread-local) ---
+# ThreadingHTTPServer runs each request in its own thread. The handler stamps the
+# caller's spend permission + label here so the cache, transcription, and cost
+# layers can honor them without threading params through every call. Background
+# threads (the poller) never set it → they default to full (owner) behavior.
+_request_ctx = threading.local()
+
+
+def set_request_context(allow_spend: bool, actor: str) -> None:
+    _request_ctx.allow_spend = allow_spend
+    _request_ctx.actor = actor
+
+
+def clear_request_context() -> None:
+    _request_ctx.allow_spend = True
+    _request_ctx.actor = "system"
+
+
+def request_allows_spend() -> bool:
+    """True if the current caller may incur API spend (X fetch / transcription).
+    Defaults True for non-request threads (poller, startup)."""
+    return getattr(_request_ctx, "allow_spend", True)
+
+
+def request_actor() -> str:
+    return getattr(_request_ctx, "actor", "system")

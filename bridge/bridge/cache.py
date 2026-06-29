@@ -53,7 +53,10 @@ class Cache:
             return lk
 
     def _maybe_client(self):
-        if not (config.ALLOW_FETCH and config.BEARER):
+        # Global money-safety (ALLOW_FETCH + bearer) AND the current caller's
+        # per-token spend permission (owner/poller = allowed; cache-only token =
+        # denied → returns None, so the call is served purely from cache).
+        if not (config.ALLOW_FETCH and config.BEARER and config.request_allows_spend()):
             return None
         if self._client is None:
             from .xapi import XClient

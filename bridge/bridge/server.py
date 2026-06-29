@@ -68,22 +68,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _authorized(self, path: str) -> bool:
-        """Gate check. Open when no token is configured; always allow /health and
-        raw /media/:id bytes; otherwise require the bearer token."""
-        if not config.GATE_TOKEN:
-            return True
+    def _authorize(self, path: str):
+        """Resolve the caller. Returns (ok, token_info). token_info is None for
+        open endpoints (/health, raw /media bytes). On a gated bridge a missing or
+        unknown bearer yields (False, None). With no tokens configured at all the
+        bridge is open (dev/localhost) with full access."""
         if path == "/health" or path.rstrip("/") == "/health":
-            return True
+            return True, None
         if MEDIA_BYTES_RE.match(path) and not MEDIA_TRANSCRIBE_RE.match(path):
-            return True
+            return True, None
+        if not config.TOKENS.any_configured():
+            return True, config.TokenInfo("open", True)
         auth = self.headers.get("Authorization", "")
-        return auth == f"Bearer {config.GATE_TOKEN}"
+        bearer = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+        info = config.TOKENS.resolve(bearer)
+        return (info is not None), info
+
+    def _stamp_context(self, token) -> None:
+        """Stamp this request's spend permission + actor label for the cache/
+        transcription/ledger layers. Open endpoints (token None) get no budget."""
+        config.set_request_context(bool(token and token.allow_fetch),
+                                   token.label if token else "anonymous")
 
     def do_POST(self):  # noqa: N802
         # Test-only hook: delete an author's newest cached tweet and clear the
         # timeline freshness, so a subsequent poll re-discovers it deterministically.
-        if not self._authorized(urlparse(self.path).path):
+        ok, _token = self._authorize(urlparse(self.path).path)
+        if not ok:
             self._send(401, {"error": "unauthorized"})
             return
         m = re.match(r"^/__test_make_stale/(?P<id>\d+)/?$", urlparse(self.path).path)
@@ -115,35 +126,39 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path, qs = parsed.path, parse_qs(parsed.query)
 
-        if not self._authorized(path):
+        ok, token = self._authorize(path)
+        if not ok:
             self._send(401, {"error": "unauthorized"})
             return
-
-        sm = STREAM_RE.match(path)
-        if sm:
-            self._handle_stream(unquote(sm.group("resource")), qs)
-            return
-
-        tm = MEDIA_TRANSCRIBE_RE.match(path)
-        if tm:
-            self._send(*self._h_transcription(tm.group("id"), qs))
-            return
-
-        bm = MEDIA_BYTES_RE.match(path)
-        if bm:
-            self._handle_media_bytes(bm.group("id"))
-            return
-
-        for _method, pat, name in JSON_ROUTES:
-            m = pat.match(path)
-            if m:
-                try:
-                    status, body = getattr(self, f"h_{name}")(m, qs)
-                except Exception as e:  # noqa: BLE001
-                    status, body = 500, {"error": str(e)}
-                self._send(status, body)
+        self._stamp_context(token)
+        try:
+            sm = STREAM_RE.match(path)
+            if sm:
+                self._handle_stream(unquote(sm.group("resource")), qs)
                 return
-        self._send(404, {"error": "no such route", "path": path})
+
+            tm = MEDIA_TRANSCRIBE_RE.match(path)
+            if tm:
+                self._send(*self._h_transcription(tm.group("id"), qs))
+                return
+
+            bm = MEDIA_BYTES_RE.match(path)
+            if bm:
+                self._handle_media_bytes(bm.group("id"))
+                return
+
+            for _method, pat, name in JSON_ROUTES:
+                m = pat.match(path)
+                if m:
+                    try:
+                        status, body = getattr(self, f"h_{name}")(m, qs)
+                    except Exception as e:  # noqa: BLE001
+                        status, body = 500, {"error": str(e)}
+                    self._send(status, body)
+                    return
+            self._send(404, {"error": "no such route", "path": path})
+        finally:
+            config.clear_request_context()
 
     # ----- JSON handlers -----
 
@@ -153,17 +168,25 @@ class Handler(BaseHTTPRequestHandler):
             "allow_fetch": config.ALLOW_FETCH, "bearer_configured": bool(config.BEARER),
             "transcribe_enabled": config.TRANSCRIBE_ENABLED,
             "transcribe_model": config.TRANSCRIBE_MODEL,
-            "auth_required": bool(config.GATE_TOKEN),
+            "auth_required": config.TOKENS.any_configured(),
+            "consumer_tokens": config.TOKENS.count(),
             "active_streams": _poller.active_resources(), **_repo.counts(),
         }
 
     # ----- media handlers -----
 
     def _h_transcription(self, media_id: str, qs: dict):
+        media = _repo.get_media(media_id)
+        if not media:
+            return 404, {"error": "unknown media", "media_id": media_id}
+        # Cache-only callers: serve an existing transcription, never pay for a new one.
+        if not config.request_allows_spend():
+            cached = media.get("transcription")
+            if cached:
+                return 200, {"media_id": media_id, "transcription": cached, "cached": True}
+            return 403, {"error": "transcription requires a fetch-enabled token", "media_id": media_id}
         if not config.TRANSCRIBE_ENABLED:
             return 503, {"error": "transcription disabled (no Anthropic credential)", "media_id": media_id}
-        if not _repo.get_media(media_id):
-            return 404, {"error": "unknown media", "media_id": media_id}
         text = _media.transcribe_one(media_id, force=_truthy(qs, "fresh"))
         if text is None:
             return 502, {"error": "transcription failed", "media_id": media_id}
@@ -183,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def h_budget(self, m, qs):
-        return 200, _repo.budget()
+        return 200, _repo.budget(by_actor=_truthy(qs, "by_actor"))
 
     def h_tweet(self, m, qs):
         t = _cache.get_tweet(m.group("id"), fresh=_truthy(qs, "fresh"))
@@ -238,6 +261,10 @@ class Handler(BaseHTTPRequestHandler):
         result set in one bounded-parallel batch, then re-read so the returned
         tweets carry their transcriptions."""
         if not _truthy(qs, "transcribe") or not tweets:
+            return tweets
+        # Cache-only callers don't trigger new transcription spend; any already-
+        # cached transcriptions are still present on the returned tweets.
+        if not config.request_allows_spend():
             return tweets
         ids = [t["tweet_id"] for t in tweets]
         if _media.transcribe_for_tweets(ids):
@@ -295,6 +322,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(host: str = None, port: int = None) -> None:
     host = host or config.HOST
     port = port or config.PORT
+    _repo.migrate()  # idempotent: add api_cost_ledger.actor for per-token attribution
     _poller.start()
     httpd = ThreadingHTTPServer((host, port), Handler)
     counts = _repo.counts()

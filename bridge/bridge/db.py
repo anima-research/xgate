@@ -353,6 +353,18 @@ class Repo:
 
     # ----- cost ledger -----
 
+    def migrate(self) -> None:
+        """Idempotent column adds for an already-running bridge (the init script
+        handles fresh seeds). Adds api_cost_ledger.actor for per-token attribution."""
+        con = self._con()
+        try:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(api_cost_ledger)")}
+            if "actor" not in cols:
+                con.execute("ALTER TABLE api_cost_ledger ADD COLUMN actor TEXT")
+                con.commit()
+        finally:
+            con.close()
+
     def record_cost(self, call: dict) -> None:
         con = self._con()
         try:
@@ -360,17 +372,18 @@ class Repo:
             con.execute(
                 "INSERT INTO api_cost_ledger "
                 "(ts, endpoint, kind, status, posts, users, media, cost_usd, "
-                " rate_limit, rate_remaining, rate_reset) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                " rate_limit, rate_remaining, rate_reset, actor) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (call.get("ts"), call.get("endpoint"), call.get("kind"), call.get("status"),
                  r.get("posts_data", 0) + r.get("posts_includes", 0), r.get("users", 0),
                  r.get("media", 0), call.get("cost_usd", 0),
-                 call.get("rate_limit"), call.get("rate_remaining"), call.get("rate_reset")),
+                 call.get("rate_limit"), call.get("rate_remaining"), call.get("rate_reset"),
+                 call.get("actor") or config.request_actor()),
             )
             con.commit()
         finally:
             con.close()
 
-    def budget(self) -> dict:
+    def budget(self, by_actor: bool = False) -> dict:
         con = self._con()
         try:
             row = con.execute(
@@ -378,7 +391,15 @@ class Repo:
                 "COALESCE(SUM(posts),0) AS posts, COALESCE(SUM(users),0) AS users, "
                 "COALESCE(SUM(media),0) AS media, MAX(ts) AS last_call FROM api_cost_ledger"
             ).fetchone()
-            return dict(row)
+            out = dict(row)
+            if by_actor:
+                rows = con.execute(
+                    "SELECT COALESCE(actor,'system') AS actor, COUNT(*) AS calls, "
+                    "COALESCE(SUM(cost_usd),0) AS total_usd FROM api_cost_ledger "
+                    "GROUP BY COALESCE(actor,'system') ORDER BY total_usd DESC"
+                ).fetchall()
+                out["by_actor"] = [dict(r) for r in rows]
+            return out
         finally:
             con.close()
 
