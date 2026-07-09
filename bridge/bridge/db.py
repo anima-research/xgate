@@ -192,7 +192,10 @@ class Repo:
         finally:
             con.close()
 
-    def get_timeline(self, handle_or_id: str, limit: int = 50, before: Optional[str] = None) -> list[dict]:
+    def get_timeline(self, handle_or_id: str, limit: int = 50, before: Optional[str] = None,
+                     since: Optional[str] = None) -> list[dict]:
+        """Author timeline, newest-first. `before` is an exclusive upper bound and
+        `since` an inclusive lower bound (ISO timestamps) — together a time range."""
         h = handle_or_id.lstrip("@")
         author_id = h if h.isdigit() else self.resolve_handle(h)
         con = self._con()
@@ -202,6 +205,9 @@ class Repo:
             if before:
                 sql += " AND created_at < ?"
                 params.append(before)
+            if since:
+                sql += " AND created_at >= ?"
+                params.append(since)
             sql += " ORDER BY created_at DESC LIMIT ?"
             params.append(min(limit, 200))
             rows = con.execute(sql, params).fetchall()
@@ -209,25 +215,55 @@ class Repo:
         finally:
             con.close()
 
-    def search(self, query: str, limit: int = 50, include_media: bool = True) -> list[dict]:
-        """FTS over tweet text and (optionally) media transcriptions, merged."""
+    def search(self, query: Optional[str] = None, limit: int = 50, include_media: bool = True,
+               author: Optional[str] = None, since: Optional[str] = None,
+               until: Optional[str] = None, tier: Optional[str] = None) -> list[dict]:
+        """Query the archive. `query` (FTS5) is optional — omit it for a pure
+        filter/range query. Optional filters (applied in all modes): `author`
+        (username), `since` (inclusive ISO lower bound), `until` (exclusive ISO
+        upper bound), `tier` (spine/cast/context/bridge). With a query, results
+        are relevance-ranked over tweet text + media transcriptions; without one,
+        newest-first."""
         con = self._con()
         try:
             limit = min(limit, 200)
-            seen: dict[str, dict] = {}
-            for r in con.execute(
-                "SELECT t.* FROM tweets t JOIN tweets_fts f ON f.tweet_id = t.tweet_id "
-                "WHERE tweets_fts MATCH ? ORDER BY rank LIMIT ?", (query, limit),
-            ):
-                seen.setdefault(r["tweet_id"], self._tweet_row(r))
-            if include_media and len(seen) < limit:
+            conds: list[str] = []
+            fparams: list[Any] = []
+            if author:
+                conds.append("t.author_username = ?"); fparams.append(author.lstrip("@"))
+            if since:
+                conds.append("t.created_at >= ?"); fparams.append(since)
+            if until:
+                conds.append("t.created_at < ?"); fparams.append(until)
+            if tier:
+                conds.append("t.tier = ?"); fparams.append(tier)
+            extra = (" AND " + " AND ".join(conds)) if conds else ""
+
+            if query:
+                seen: dict[str, dict] = {}
                 for r in con.execute(
-                    "SELECT t.* FROM tweets t JOIN media m ON m.tweet_id = t.tweet_id "
-                    "JOIN media_fts f ON f.media_id = m.media_id AND f.tweet_id = m.tweet_id "
-                    "WHERE media_fts MATCH ? ORDER BY rank LIMIT ?", (query, limit),
+                    "SELECT t.* FROM tweets t JOIN tweets_fts f ON f.tweet_id = t.tweet_id "
+                    f"WHERE tweets_fts MATCH ?{extra} ORDER BY rank LIMIT ?",
+                    [query, *fparams, limit],
                 ):
                     seen.setdefault(r["tweet_id"], self._tweet_row(r))
-            return self._hydrate(con, list(seen.values())[:limit])
+                if include_media and len(seen) < limit:
+                    for r in con.execute(
+                        "SELECT t.* FROM tweets t JOIN media m ON m.tweet_id = t.tweet_id "
+                        "JOIN media_fts f ON f.media_id = m.media_id AND f.tweet_id = m.tweet_id "
+                        f"WHERE media_fts MATCH ?{extra} ORDER BY rank LIMIT ?",
+                        [query, *fparams, limit],
+                    ):
+                        seen.setdefault(r["tweet_id"], self._tweet_row(r))
+                return self._hydrate(con, list(seen.values())[:limit])
+
+            # No query → pure filter/range query, newest-first.
+            where = (" WHERE " + " AND ".join(conds)) if conds else ""
+            rows = con.execute(
+                f"SELECT t.* FROM tweets t{where} ORDER BY t.created_at DESC LIMIT ?",
+                [*fparams, limit],
+            ).fetchall()
+            return self._hydrate(con, [self._tweet_row(r) for r in rows])
         finally:
             con.close()
 

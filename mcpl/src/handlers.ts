@@ -100,6 +100,7 @@ export async function handleToolCall(
           typeof args.limit === 'number' ? args.limit : 50,
           args.before ? String(args.before) : undefined,
           Boolean(args.transcribe),
+          args.since ? String(args.since) : undefined,
         );
         return {
           ok: true,
@@ -108,14 +109,31 @@ export async function handleToolCall(
         };
       }
       case 'search_tweets': {
+        const query = args.query ? String(args.query) : undefined;
+        const filters = {
+          author: args.author ? String(args.author) : undefined,
+          since: args.since ? String(args.since) : undefined,
+          until: args.until ? String(args.until) : undefined,
+          tier: args.tier ? String(args.tier) : undefined,
+        };
+        if (!query && !filters.author && !filters.since && !filters.until && !filters.tier) {
+          return { ok: false, error: 'provide query and/or a filter (author, since, until, tier)' };
+        }
         const tweets = await bridge.search(
-          String(args.query),
+          query,
           typeof args.limit === 'number' ? args.limit : 50,
+          filters,
         );
+        const parts = [
+          query ? `search “${query}”` : 'archive query',
+          filters.author ? `@${filters.author.replace(/^@/, '')}` : '',
+          filters.tier ? `tier:${filters.tier}` : '',
+          filters.since || filters.until ? `${filters.since ?? '…'}→${filters.until ?? 'now'}` : '',
+        ].filter(Boolean);
         return {
           ok: true,
           data: { count: tweets.length, tweets },
-          text: isFull(args) ? undefined : renderList(tweets, { title: `search “${args.query}”` }),
+          text: isFull(args) ? undefined : renderList(tweets, { title: parts.join(' · ') }),
         };
       }
       case 'peek_thread': {

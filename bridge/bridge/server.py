@@ -244,15 +244,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_timeline(self, m, qs):
         who = unquote(m.group("who"))
-        tweets = _cache.timeline(who, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"))
+        # `until` is an alias for the existing `before` (exclusive upper bound).
+        before = (qs.get("until") or qs.get("before") or [None])[0]
+        since = (qs.get("since") or [None])[0]
+        tweets = _cache.timeline(who, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"),
+                                 before=before, since=since)
         tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"who": who, "count": len(tweets), "tweets": tweets}
 
     def h_search(self, m, qs):
-        q = qs.get("q", [""])[0]
-        if not q:
-            return 400, {"error": "q (query) is required"}
-        tweets = _cache.search(q, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"))
+        q = (qs.get("q") or [""])[0] or None
+        author = (qs.get("author") or [None])[0]
+        since = (qs.get("since") or [None])[0]
+        until = (qs.get("until") or qs.get("before") or [None])[0]
+        tier = (qs.get("tier") or [None])[0]
+        if not (q or author or since or until or tier):
+            return 400, {"error": "provide q and/or a filter (author, since, until, tier)"}
+        tweets = _cache.search(q, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"),
+                               author=author, since=since, until=until, tier=tier)
         tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"query": q, "count": len(tweets), "tweets": tweets}
 

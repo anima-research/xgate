@@ -114,19 +114,27 @@ class Cache:
 
     # ----- collections (read-through) -----
 
-    def timeline(self, handle_or_id: str, limit: int = 50, fresh: bool = False) -> list[dict]:
+    def timeline(self, handle_or_id: str, limit: int = 50, fresh: bool = False,
+                 before: str = None, since: str = None) -> list[dict]:
         h = handle_or_id.lstrip("@")
         author_id = h if h.isdigit() else self.repo.resolve_handle(h)
         key = f"timeline:{author_id or h}"
-        if (fresh or not self.repo.is_fresh(key)) and self._maybe_client():
+        # A range query (before/since given) is served purely from cache — never
+        # trigger a live fetch for historical browsing.
+        is_range = before is not None or since is not None
+        if not is_range and (fresh or not self.repo.is_fresh(key)) and self._maybe_client():
             self.refresh(key, force=fresh)
-        return self.repo.get_timeline(handle_or_id, limit=limit)
+        return self.repo.get_timeline(handle_or_id, limit=limit, before=before, since=since)
 
-    def search(self, query: str, limit: int = 50, fresh: bool = False) -> list[dict]:
-        key = f"search:{query}"
-        if (fresh or not self.repo.is_fresh(key)) and self._maybe_client():
-            self.refresh(key, force=fresh)
-        return self.repo.search(query, limit=limit)
+    def search(self, query: str = None, limit: int = 50, fresh: bool = False,
+               author: str = None, since: str = None, until: str = None,
+               tier: str = None) -> list[dict]:
+        # Live read-through only for a plain recent text search; filtered/range
+        # queries (or query-less filters) are served from cache, no spend.
+        filtered = any((author, since, until, tier)) or not query
+        if query and not filtered and (fresh or not self.repo.is_fresh(f"search:{query}")) and self._maybe_client():
+            self.refresh(f"search:{query}", force=fresh)
+        return self.repo.search(query, limit=limit, author=author, since=since, until=until, tier=tier)
 
     # ----- the shared live refresh (poller + on-demand) -----
 

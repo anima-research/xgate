@@ -171,10 +171,13 @@ export class BridgeClient {
     return this.get<BridgeUser>(`/user/${encodeURIComponent(handleOrId)}`);
   }
 
-  /** Author timeline, newest-first. `before` is an ISO timestamp for paging. */
-  async userTimeline(handleOrId: string, limit = 50, before?: string, transcribe = false): Promise<BridgeTweet[]> {
+  /** Author timeline, newest-first. `before` (exclusive) + `since` (inclusive)
+   *  are ISO timestamps for paging / a time range. */
+  async userTimeline(handleOrId: string, limit = 50, before?: string, transcribe = false,
+                     since?: string): Promise<BridgeTweet[]> {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (before) qs.set('before', before);
+    if (since) qs.set('since', since);
     if (transcribe) qs.set('transcribe', '1');
     const r = await this.get<{ tweets: BridgeTweet[] }>(
       `/timeline/${encodeURIComponent(handleOrId)}?${qs.toString()}`,
@@ -182,9 +185,15 @@ export class BridgeClient {
     return r?.tweets ?? [];
   }
 
-  /** Full-text search over cached tweets (FTS5 on the bridge). */
-  async search(query: string, limit = 50): Promise<BridgeTweet[]> {
-    const qs = new URLSearchParams({ q: query, limit: String(limit) });
+  /** Query the archive (FTS5). `query` is optional — omit for a pure filter/range
+   *  query. Filters: author, since (inclusive ISO), until (exclusive ISO), tier. */
+  async search(query?: string, limit = 50, f: SearchFilters = {}): Promise<BridgeTweet[]> {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (query) qs.set('q', query);
+    if (f.author) qs.set('author', f.author.replace(/^@/, ''));
+    if (f.since) qs.set('since', f.since);
+    if (f.until) qs.set('until', f.until);
+    if (f.tier) qs.set('tier', f.tier);
     const r = await this.get<{ tweets: BridgeTweet[] }>(`/search?${qs.toString()}`);
     return r?.tweets ?? [];
   }
@@ -198,6 +207,17 @@ export class BridgeClient {
   async timelinePreview(handleOrId: string): Promise<BridgeTimelinePreview | null> {
     return this.get<BridgeTimelinePreview>(`/timeline/${encodeURIComponent(handleOrId)}/preview`);
   }
+}
+
+export interface SearchFilters {
+  /** Restrict to one author (@handle or bare username). */
+  author?: string;
+  /** Inclusive lower bound (ISO timestamp / date). */
+  since?: string;
+  /** Exclusive upper bound (ISO timestamp / date). */
+  until?: string;
+  /** Curation tier: spine | cast | context | bridge. */
+  tier?: string;
 }
 
 export interface BridgeThreadPreview {

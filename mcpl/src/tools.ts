@@ -75,13 +75,16 @@ const baseToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'user_timeline',
-    description: 'Fetch a user’s tweets newest-first from the cache.',
+    description:
+      'Fetch a user’s tweets newest-first from the cache. Use before/since to page ' +
+      'or pull a time range (e.g. since=2024-01-01 & before=2024-02-01).',
     inputSchema: {
       type: 'object',
       properties: {
         handle: { type: 'string', description: '@handle or numeric user id' },
         limit: { type: 'number', description: 'Max tweets to return (default 50, max 200)' },
-        before: { type: 'string', description: 'ISO timestamp; return only tweets older than this (paging)' },
+        before: { type: 'string', description: 'ISO timestamp; only tweets older than this (exclusive upper bound / paging)' },
+        since: { type: 'string', description: 'ISO timestamp; only tweets at/after this (inclusive lower bound)' },
         transcribe: { type: 'boolean', description: 'Batch-transcribe all images in the returned tweets' },
         ...FORMAT_PROP,
       },
@@ -117,15 +120,24 @@ const baseToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'search_tweets',
-    description: 'Full-text search over cached tweets (FTS5).',
+    description:
+      'Query the cached archive. `query` is an FTS5 full-text search (tweet text + ' +
+      'image transcriptions) and is OPTIONAL — omit it and pass only filters for a ' +
+      'pure range/filter query. Filters: author, since (inclusive ISO date), until ' +
+      '(exclusive ISO date), tier (spine|cast|context|bridge). At least one of ' +
+      'query/author/since/until/tier is required. E.g. {tier:"spine", author:"repligate", ' +
+      'since:"2024-01-01", until:"2024-07-01"}.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'FTS5 query string' },
+        query: { type: 'string', description: 'FTS5 query string (optional)' },
+        author: { type: 'string', description: 'Restrict to one author (@handle or username)' },
+        since: { type: 'string', description: 'Inclusive lower bound (ISO date/timestamp)' },
+        until: { type: 'string', description: 'Exclusive upper bound (ISO date/timestamp)' },
+        tier: { type: 'string', enum: ['spine', 'cast', 'context', 'bridge'], description: 'Curation tier filter' },
         limit: { type: 'number', description: 'Max results (default 50, max 200)' },
         ...FORMAT_PROP,
       },
-      required: ['query'],
     },
   },
   {
