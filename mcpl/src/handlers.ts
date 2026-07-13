@@ -9,8 +9,8 @@
  * state checkpoint the host persists.
  */
 
-import type { ContentBlock } from '@connectome/mcpl-core';
-import { textContent } from '@connectome/mcpl-core';
+import type { ContentBlock } from '@animalabs/mcpl-core';
+import { textContent } from '@animalabs/mcpl-core';
 import type { BridgeClient, BridgeMedia, BridgeTweet } from './bridge-client.js';
 import {
   renderTweet,

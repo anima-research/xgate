@@ -14,12 +14,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as net from 'node:net';
 
-import { McplConnection, method } from '@connectome/mcpl-core';
+import { McplConnection, method } from '@animalabs/mcpl-core';
 import type {
   McplInitializeParams,
   ChannelsOpenResult,
   ChannelsIncomingParams,
-} from '@connectome/mcpl-core';
+} from '@animalabs/mcpl-core';
 
 import { BridgeClient } from '../src/bridge-client.js';
 import { XMcplServer } from '../src/server.js';

@@ -10,7 +10,7 @@
  * The value segment is percent-encoded so queries with spaces/colons are safe.
  */
 
-import type { ChannelDescriptor } from '@connectome/mcpl-core';
+import type { ChannelDescriptor } from '@animalabs/mcpl-core';
 
 export type XChannelKind = 'timeline' | 'search' | 'thread' | 'mentions';
 

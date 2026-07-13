@@ -6,7 +6,7 @@
  * HOST-persisted state (hostState: true) — see x-bridge/DESIGN.md.
  */
 
-import type { FeatureSetDeclaration } from '@connectome/mcpl-core';
+import type { FeatureSetDeclaration } from '@animalabs/mcpl-core';
 
 // State model: `hostState: true` is HOST-managed (the host stores full state and
 // injects it as `params.state`) and is single-valued by protocol — so x.feed is

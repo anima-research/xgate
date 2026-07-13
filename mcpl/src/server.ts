@@ -15,7 +15,7 @@ import {
   McplConnection,
   textContent,
   method,
-} from '@connectome/mcpl-core';
+} from '@animalabs/mcpl-core';
 import type {
   JsonRpcRequest,
   JsonRpcNotification,
@@ -34,7 +34,7 @@ import type {
   FeatureSetsUpdateParams,
   StateRollbackParams,
   StateRollbackResult,
-} from '@connectome/mcpl-core';
+} from '@animalabs/mcpl-core';
 
 import type { BridgeClient, BridgeTweet } from './bridge-client.js';
 import { toolDefinitions } from './tools.js';

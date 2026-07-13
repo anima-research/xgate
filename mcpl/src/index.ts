@@ -12,7 +12,7 @@
  */
 
 import * as net from 'node:net';
-import { McplConnection } from '@connectome/mcpl-core';
+import { McplConnection } from '@animalabs/mcpl-core';
 import { BridgeClient } from './bridge-client.js';
 import { XMcplServer } from './server.js';
 
