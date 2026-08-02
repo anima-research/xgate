@@ -4,7 +4,7 @@
  * The bridge's per-resource poller fetches new tweets and fans them out as
  * Server-Sent Events; this class consumes one such stream and invokes a
  * callback per item. The MCPL server (server.ts) turns those into
- * channels/incoming notifications for the host.
+ * `channels/incoming` Requests to the host (SPEC §14.3).
  */
 
 import type { BridgeTweet } from './bridge-client.js';

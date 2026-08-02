@@ -42,25 +42,46 @@ async function makePair() {
   return { client: McplConnection.fromTcp(clientSocket), serverConn, tcpServer };
 }
 
+/**
+ * Handshake, then the initial policy exchange §5.3 requires before any
+ * capability-dependent behavior becomes available. It is a Request (§6.7) and
+ * grants exactly what this server advertises.
+ */
 async function handshake(client: McplConnection) {
   const params: McplInitializeParams = {
     protocolVersion: '2024-11-05',
-    capabilities: { experimental: { mcpl: { version: '0.4' } } },
+    capabilities: { experimental: { mcpl: { version: '0.5' } } },
     clientInfo: { name: 'live-test', version: '0' },
   };
   await client.sendRequest('initialize', params);
   client.sendNotification('notifications/initialized');
+  await client.sendRequest(method.FEATURE_SETS_UPDATE, {
+    effectiveCapabilities: ['tools', 'channels.register', 'channels.lifecycle', 'channels.incoming'],
+    enabled: ['x.*'],
+  });
 }
 
+/**
+ * `channels/incoming` is a Request (§14.3); answer it with per-message results
+ * as a host must.
+ */
 function nextIncoming(client: McplConnection, timeoutMs: number): Promise<ChannelsIncomingParams | null> {
   return new Promise(async (resolve) => {
     const timer = setTimeout(() => resolve(null), timeoutMs);
     try {
       for (;;) {
         const msg = await client.nextMessage();
-        if (msg.type === 'notification' && msg.notification.method === method.CHANNELS_INCOMING) {
+        if (msg.type === 'request' && msg.request.method === method.CHANNELS_INCOMING) {
+          const p = msg.request.params as ChannelsIncomingParams;
+          client.sendResponse(msg.request.id, {
+            results: p.messages.map((m) => ({
+              messageId: m.messageId,
+              accepted: true,
+              conversationId: 'conv_live',
+            })),
+          });
           clearTimeout(timer);
-          resolve(msg.notification.params as ChannelsIncomingParams);
+          resolve(p);
           return;
         }
       }

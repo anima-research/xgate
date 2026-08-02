@@ -1,21 +1,22 @@
 /**
- * Feature set declarations for the X MCPL server.
+ * Feature set declarations for the X MCPL server (SPEC §6.1, App. B.2).
  *
- * Mirrors discord-mcpl/src/feature-sets.ts. Note hostState: the bridge is
- * user-agnostic, so read/unread cursors and notification high-water marks are
- * HOST-persisted state (hostState: true) — see x-bridge/DESIGN.md.
+ * `uses` is a closed vocabulary in 0.5 (§6.2): only the capability paths listed
+ * in `grant.ts` are legal, and §6.4's derivation is fail-closed — a feature set
+ * whose `uses` is absent, empty, or carries an unrecognized value is invalid and
+ * gets disabled with reason `invalid_uses`. Each entry below therefore names
+ * only capabilities this server actually exercises; an inaccurate declaration
+ * now costs the feature set rather than being cosmetic.
+ *
+ * `hostState` is gone: it was never a spec field. The host-managed/server-managed
+ * split is signalled per response by whether the server includes `data`/`patch`
+ * in its state block (§8.3), which x.feed does via handlers.ts. `rollback` stays
+ * — §8.1 keeps it on the feature set and §8 is unchanged in 0.5.0.
  */
 
-import type { FeatureSetDeclaration } from '@animalabs/mcpl-core';
+import type { XFeatureSet } from './grant.js';
 
-// State model: `hostState: true` is HOST-managed (the host stores full state and
-// injects it as `params.state`) and is single-valued by protocol — so x.feed is
-// the one host-managed set. `rollback: true` (with hostState:false) is
-// SERVER-managed: the host only tracks opaque checkpoint ids for undo. x.post /
-// x.dm are server-managed. Hosts must thread the HOST-managed set for `state`
-// independently of any server-managed sets (see the firstStateful/getStateful
-// fixes in mcpl-harness + agent-framework).
-export const featureSets: FeatureSetDeclaration[] = [
+export const featureSets: XFeatureSet[] = [
   {
     name: 'x.read',
     description:
@@ -23,14 +24,18 @@ export const featureSets: FeatureSetDeclaration[] = [
       'Served cache-first by the bridge; live fetches cost money and are gated bridge-side.',
     uses: ['tools'],
     rollback: false,
-    hostState: false,
   },
   {
     name: 'x.post',
     description: 'Post tweets, replies, and quotes (Phase 4).',
-    uses: ['tools', 'channels.publish'],
+    // `channels.publish` dropped: this server has no channels/publish handler at
+    // all (server.ts handleNotification), so declaring it was the same
+    // over-declaration class as `pushEvents`. §6.4(2) makes under-declaration the
+    // safe direction — when Phase 4 wires publishing, the host rejects the
+    // undeclared use and emits a declaration-mismatch diagnostic; security never
+    // depended on the declaration.
+    uses: ['tools'],
     rollback: true, // server-managed undo (wired in Phase 4)
-    hostState: false,
   },
   {
     name: 'x.notifications',
@@ -38,9 +43,14 @@ export const featureSets: FeatureSetDeclaration[] = [
       'Subscribe to timelines / searches / threads / mentions as channels; the bridge ' +
       'polls per-resource and pushes new items live. For durable, cursor-tracked ' +
       'catch-up use x.feed instead.',
-    uses: ['tools'],
+    // This set owns no tools (featureSetForTool never returns it). What it
+    // actually exercises is the channel surface: channels/list (channels.register
+    // per the §14.1 table), channels/open + channels/close (channels.lifecycle),
+    // and channels/incoming (channels.incoming). §14.1 permits naming these in
+    // `uses` for honest degradation reporting — they are not the authorization,
+    // which is the connection grant.
+    uses: ['channels.register', 'channels.lifecycle', 'channels.incoming'],
     rollback: false,
-    hostState: false,
   },
   {
     name: 'x.feed',
@@ -50,14 +60,12 @@ export const featureSets: FeatureSetDeclaration[] = [
       'read cursors. State is host-persisted and survives restarts.',
     uses: ['tools'],
     rollback: true,
-    hostState: true,
   },
   {
     name: 'x.dm',
     description: 'Direct messages (declared now, wired in Phase 5; needs per-account OAuth).',
     uses: ['tools'],
     rollback: true, // server-managed undo (wired in Phase 5)
-    hostState: false,
   },
 ];
 

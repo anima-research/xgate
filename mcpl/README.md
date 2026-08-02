@@ -20,7 +20,10 @@ survives restarts via the MCPL host-managed-state mechanism — the host injects
 current state into every `tools/call` as `params.state` and persists the `state`
 checkpoint a feed tool returns (agent-framework's `CheckpointManager` → Chronicle).
 Because the host injects/records state for a single feature set per server, `x.feed`
-is the only `hostState: true` set; the bridge stays deliberately user-agnostic.
+is the only set that returns state data; the bridge stays deliberately user-agnostic.
+(The non-spec `hostState` declaration field is gone as of MCPL 0.5 — the
+host-managed/server-managed split is signalled per response by whether the state
+block carries `data`/`patch`, SPEC §8.3.)
 
 To preview before you pay to open: `peek_thread` / `peek_timeline` return size,
 participants, time span and image counts without fetching bodies.
@@ -58,7 +61,8 @@ X_BRIDGE_URL=http://127.0.0.1:8810 X_BACKFILL=20 npm run start -- --tcp 9100
 ```
 
 Opening an `x.timeline` / `x.search` / `x.thread` channel subscribes to the
-bridge's SSE stream; new tweets arrive live as `channels/incoming` (ambient
+bridge's SSE stream; new tweets arrive live as `channels/incoming` Requests
+(SPEC §14.3 — the host answers with per-message `results`) (ambient
 awareness, no cursor). For durable, cursor-tracked catch-up that won't resurface
 what you've read, use the `x.feed` tools (`feed_add`, `feed_show`, `feed_read`)
 instead — those persist host-side.
