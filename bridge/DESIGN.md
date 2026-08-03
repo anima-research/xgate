@@ -37,7 +37,7 @@ frontend that talks to the bridge.
    contained.
 4. **The bridge is user-agnostic.** MCPL is persistent — the *host* owns state.
    Read/unread cursors, subscriptions, and notification high-water marks live in
-   host-persisted MCPL feature-set state (`hostState: true`), NOT in the bridge.
+   host-persisted MCPL feature-set state (SPEC §8.3/§8.4), NOT in the bridge.
    The only user-ish thing the bridge holds is **write credentials per account**,
    needed solely for posting and DMs. The bridge polls per *resource*, never per
    *user*; each host dedupes the stream against its own persisted cursor.
@@ -121,8 +121,8 @@ GET  /stream/:resource  (SSE)         poll fan-out of new items   (Phase 3)
 ## MCPL mapping (`x-mcpl`, mirrors `discord-mcpl`)
 
 - **Feature sets:** `x.read`, `x.post` (rollback=true — posted tweet recorded for
-  checkpoint undo, like discord `send_message`), `x.notifications`
-  (`hostState: true`), `x.dm` (declared, wired later).
+  checkpoint undo, like discord `send_message`), `x.notifications`, `x.feed`
+  (host-persisted state via SPEC §8.3 `data`/`patch`), `x.dm` (declared, wired later).
 - **Channels:** a user timeline / a search query / a conversation thread / the
   mentions stream — each subscribable; bridge polls → SSE fan-out → host pushes.
 - **Tools:** `lookup_tweet`, `get_thread`, `get_user`, `user_timeline`, `search`,
