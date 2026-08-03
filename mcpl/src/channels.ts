@@ -51,6 +51,31 @@ export function toDescriptor(addr: XChannelAddress): ChannelDescriptor {
   };
 }
 
+/**
+ * Event tags for an item delivered on this channel (SPEC §16).
+ *
+ * Only structurally-certain labels are emitted. Tags are namespaced (§16.1 forbids
+ * bare tags), and `chat:ambient` is never emitted alongside anything implying
+ * `chat:addressed` (§16.3 mutual exclusion). `chat:reply` is deliberately absent:
+ * it means "a reply to the agent's own message", and a tweet's `reply_to_tweet_id`
+ * does not tell us that. Tags are treatment hints only and carry no authority
+ * (§16.6).
+ */
+export function tagsFor(addr: XChannelAddress, hasImage: boolean): string[] {
+  const tags: string[] = [];
+  if (addr.kind === 'mentions') {
+    // A mentions resource only yields items naming the subscribed account.
+    // §16.3: chat:mention ⇒ chat:addressed; emitted directly as well.
+    tags.push('chat:mention', 'chat:addressed');
+  } else {
+    // Timelines, searches and threads are overheard, not directed at the agent.
+    tags.push('chat:ambient');
+  }
+  if (addr.kind === 'thread') tags.push('chat:thread');
+  if (hasImage) tags.push('chat:has-image');
+  return tags;
+}
+
 /** Build an address from a channels/open request's (type, address). */
 export function addressFromOpen(type: string, address: unknown): XChannelAddress | null {
   const kind = type.startsWith('x.') ? (type.slice(2) as XChannelKind) : (type as XChannelKind);

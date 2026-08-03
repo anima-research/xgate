@@ -1,21 +1,32 @@
 /**
- * Feature set declarations for the X MCPL server.
+ * Feature set declarations for the X MCPL server (SPEC §6).
  *
- * Mirrors discord-mcpl/src/feature-sets.ts. Note hostState: the bridge is
- * user-agnostic, so read/unread cursors and notification high-water marks are
- * HOST-persisted state (hostState: true) — see x-bridge/DESIGN.md.
+ * Feature sets are a cooperative convenience derived from the capability grant
+ * (§5.4/§6.4); they are not a security boundary and they confer nothing. `uses`
+ * is a closed vocabulary (§6.2 / App. B.2) and is typed as `CapabilityPath[]`
+ * so an unrecognised value is a compile error rather than an `invalid_uses`
+ * disable at runtime.
+ *
+ * `hostState` is not a spec field and was dropped in the 0.5 migration. The host
+ * still learns which set owns a state checkpoint from the `featureSet` member of
+ * the checkpoint itself (see handlers.ts `committed()`), which is where §8.2 puts
+ * that information.
  */
 
-import type { FeatureSetDeclaration } from '@animalabs/mcpl-core';
+import { type CapabilityPath, isCapabilityPath, type CapabilityGrant } from './capabilities.js';
 
-// State model: `hostState: true` is HOST-managed (the host stores full state and
-// injects it as `params.state`) and is single-valued by protocol — so x.feed is
-// the one host-managed set. `rollback: true` (with hostState:false) is
-// SERVER-managed: the host only tracks opaque checkpoint ids for undo. x.post /
-// x.dm are server-managed. Hosts must thread the HOST-managed set for `state`
-// independently of any server-managed sets (see the firstStateful/getStateful
-// fixes in mcpl-harness + agent-framework).
-export const featureSets: FeatureSetDeclaration[] = [
+/**
+ * A 0.5 feature-set declaration. §6.2 requires `description` and `uses`; §8.1
+ * adds the optional `rollback` flag (§8 is unchanged in 0.5.0).
+ */
+export interface XFeatureSet {
+  name: string;
+  description: string;
+  uses: CapabilityPath[];
+  rollback?: boolean;
+}
+
+export const featureSets: XFeatureSet[] = [
   {
     name: 'x.read',
     description:
@@ -23,14 +34,14 @@ export const featureSets: FeatureSetDeclaration[] = [
       'Served cache-first by the bridge; live fetches cost money and are gated bridge-side.',
     uses: ['tools'],
     rollback: false,
-    hostState: false,
   },
   {
     name: 'x.post',
-    description: 'Post tweets, replies, and quotes (Phase 4).',
-    uses: ['tools', 'channels.publish'],
+    description: 'Post tweets, replies, and quotes (Phase 4; no tools wired yet).',
+    // Posting is a tool surface (post_tweet/reply_tweet/…), not channels/publish:
+    // this server has no channels/publish handler at all.
+    uses: ['tools'],
     rollback: true, // server-managed undo (wired in Phase 4)
-    hostState: false,
   },
   {
     name: 'x.notifications',
@@ -38,9 +49,10 @@ export const featureSets: FeatureSetDeclaration[] = [
       'Subscribe to timelines / searches / threads / mentions as channels; the bridge ' +
       'polls per-resource and pushes new items live. For durable, cursor-tracked ' +
       'catch-up use x.feed instead.',
-    uses: ['tools'],
+    // This set owns no tools; it is the channel surface — channels/list (register),
+    // channels/open + channels/close (lifecycle), and channels/incoming (§14.1).
+    uses: ['channels.register', 'channels.lifecycle', 'channels.incoming'],
     rollback: false,
-    hostState: false,
   },
   {
     name: 'x.feed',
@@ -50,14 +62,12 @@ export const featureSets: FeatureSetDeclaration[] = [
       'read cursors. State is host-persisted and survives restarts.',
     uses: ['tools'],
     rollback: true,
-    hostState: true,
   },
   {
     name: 'x.dm',
     description: 'Direct messages (declared now, wired in Phase 5; needs per-account OAuth).',
     uses: ['tools'],
     rollback: true, // server-managed undo (wired in Phase 5)
-    hostState: false,
   },
 ];
 
@@ -102,4 +112,72 @@ export function featureSetForTool(toolName: string): string | undefined {
     default:
       return undefined;
   }
+}
+
+/** One entry of the degradation receipt's `unavailableFeatures` (§6.7). */
+export interface UnavailableFeature {
+  featureSet: string;
+  missingCapabilities: string[];
+  effect: 'disabled';
+  /** §6.4 diagnostic reason, when the declaration itself was rejected. */
+  reason?: 'invalid_uses';
+}
+
+export interface FeatureSetDerivation {
+  enabled: Set<string>;
+  unavailable: UnavailableFeature[];
+}
+
+/**
+ * Derive enabled feature sets from the capability grant (§6.4), fail-closed.
+ *
+ *  1. Absent, empty, or unrecognised `uses` ⇒ invalid; disabled, reason `invalid_uses`.
+ *  2. Any capability in `uses` not in the grant ⇒ disabled, and the missing paths are
+ *     reported in the receipt as consequence testimony — never as a claim of entitlement.
+ *
+ * The host's explicit `disabled` list always removes; its `enabled` list can only
+ * confirm a set the grant already permits. Feature sets carry no authority of their
+ * own, so nothing here can widen the grant.
+ */
+export function deriveEnabledFeatureSets(
+  declarations: readonly XFeatureSet[],
+  grant: CapabilityGrant,
+  hostEnabled?: readonly string[],
+  hostDisabled?: readonly string[],
+): FeatureSetDerivation {
+  const enabled = new Set<string>();
+  const unavailable: UnavailableFeature[] = [];
+  const disabledSet = new Set(hostDisabled ?? []);
+  const enabledSet = hostEnabled ? new Set(hostEnabled) : undefined;
+
+  for (const fs of declarations) {
+    const uses = fs.uses as unknown[];
+    if (!Array.isArray(uses) || uses.length === 0 || !uses.every(isCapabilityPath)) {
+      unavailable.push({
+        featureSet: fs.name,
+        missingCapabilities: [],
+        effect: 'disabled',
+        reason: 'invalid_uses',
+      });
+      continue;
+    }
+    const missing = grant.missing(fs.uses);
+    if (missing.length > 0) {
+      unavailable.push({ featureSet: fs.name, missingCapabilities: missing, effect: 'disabled' });
+      continue;
+    }
+    if (isEnabled(fs.name, disabledSet)) {
+      unavailable.push({ featureSet: fs.name, missingCapabilities: [], effect: 'disabled' });
+      continue;
+    }
+    // An explicit `enabled` list, when the host sends one, is a restriction on top
+    // of the derivation — never a widening of it.
+    if (enabledSet && !isEnabled(fs.name, enabledSet)) {
+      unavailable.push({ featureSet: fs.name, missingCapabilities: [], effect: 'disabled' });
+      continue;
+    }
+    enabled.add(fs.name);
+  }
+
+  return { enabled, unavailable };
 }

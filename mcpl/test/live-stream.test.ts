@@ -15,14 +15,12 @@ import assert from 'node:assert/strict';
 import * as net from 'node:net';
 
 import { McplConnection, method } from '@animalabs/mcpl-core';
-import type {
-  McplInitializeParams,
-  ChannelsOpenResult,
-  ChannelsIncomingParams,
-} from '@animalabs/mcpl-core';
+import type { ChannelsOpenResult } from '@animalabs/mcpl-core';
 
 import { BridgeClient } from '../src/bridge-client.js';
 import { XMcplServer } from '../src/server.js';
+import type { CapabilityPath } from '../src/capabilities.js';
+import type { ChannelsIncomingParams } from '../src/protocol.js';
 
 const baseUrl = process.env.X_BRIDGE_URL ?? 'http://127.0.0.1:8810';
 const REPLIGATE_ID = '1359981346119155719';
@@ -42,25 +40,40 @@ async function makePair() {
   return { client: McplConnection.fromTcp(clientSocket), serverConn, tcpServer };
 }
 
+const FULL_GRANT: CapabilityPath[] = [
+  'tools',
+  'channels.register',
+  'channels.lifecycle',
+  'channels.incoming',
+];
+
 async function handshake(client: McplConnection) {
-  const params: McplInitializeParams = {
+  const params = {
     protocolVersion: '2024-11-05',
-    capabilities: { experimental: { mcpl: { version: '0.4' } } },
+    capabilities: { experimental: { mcpl: { version: '0.5' } } },
     clientInfo: { name: 'live-test', version: '0' },
   };
   await client.sendRequest('initialize', params);
   client.sendNotification('notifications/initialized');
+  // §5.3: initial policy is a Request carrying the effective grant. Without it the
+  // server withholds every capability-dependent behavior, channels/incoming included.
+  await client.sendRequest(method.FEATURE_SETS_UPDATE, { effectiveCapabilities: FULL_GRANT });
 }
 
+/** §14.3: channels/incoming is a Request; answer it with per-message results. */
 function nextIncoming(client: McplConnection, timeoutMs: number): Promise<ChannelsIncomingParams | null> {
   return new Promise(async (resolve) => {
     const timer = setTimeout(() => resolve(null), timeoutMs);
     try {
       for (;;) {
         const msg = await client.nextMessage();
-        if (msg.type === 'notification' && msg.notification.method === method.CHANNELS_INCOMING) {
+        if (msg.type === 'request' && msg.request.method === method.CHANNELS_INCOMING) {
+          const p = msg.request.params as ChannelsIncomingParams;
+          client.sendResponse(msg.request.id, {
+            results: p.messages.map((m) => ({ messageId: m.messageId, accepted: true })),
+          });
           clearTimeout(timer);
-          resolve(msg.notification.params as ChannelsIncomingParams);
+          resolve(p);
           return;
         }
       }
