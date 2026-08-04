@@ -32,6 +32,7 @@ JSON_ROUTES = [
     ("GET", re.compile(r"^/health/?$"), "health"),
     ("GET", re.compile(r"^/budget/?$"), "budget"),
     ("GET", re.compile(r"^/tweet/(?P<id>\d+)/?$"), "tweet"),
+    ("GET", re.compile(r"^/tweets/?$"), "tweets_batch"),
     ("GET", re.compile(r"^/thread/(?P<cid>\d+)/preview/?$"), "thread_preview"),
     ("GET", re.compile(r"^/thread/(?P<cid>\d+)/?$"), "thread"),
     ("GET", re.compile(r"^/timeline/(?P<who>[^/]+)/preview/?$"), "timeline_preview"),
@@ -214,6 +215,19 @@ class Handler(BaseHTTPRequestHandler):
             return 404, {"cached": False, "tweet_id": m.group("id")}
         t = (self._maybe_transcribe([t], qs) or [t])[0]
         return 200, t
+
+    def h_tweets_batch(self, m, qs):
+        raw = qs.get("ids", [""])[0]
+        ids = [i.strip() for i in raw.split(",") if i.strip()]
+        if not ids:
+            return 400, {"error": "ids query param required (comma-separated tweet ids)"}
+        if not all(i.isdigit() for i in ids):
+            return 400, {"error": "ids must be numeric tweet ids"}
+        if len(ids) > 100:
+            return 400, {"error": "max 100 ids per request", "got": len(ids)}
+        result = _cache.get_tweets_batch(ids, fresh=_truthy(qs, "fresh"))
+        result["tweets"] = self._maybe_transcribe(result["tweets"], qs)
+        return 200, result
 
     def h_thread(self, m, qs):
         cid = m.group("cid")

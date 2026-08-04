@@ -93,6 +93,55 @@ class Cache:
         self.repo.mark_fresh(key, "tweet", config.METRICS_TTL)
         return self.repo.get_tweet(tweet_id)
 
+    # ----- batch tweet lookup -----
+
+    def get_tweets_batch(self, ids: list[str], fresh: bool = False) -> dict:
+        """Cache-first batch lookup. One upstream /2/tweets call for the misses
+        (caller should send <=100 ids). Missing ids are negative-cached so we
+        never re-pay to rediscover deletions."""
+        seen: set[str] = set()
+        ordered = [i for i in ids if not (i in seen or seen.add(i))]
+        out: dict[str, dict] = {}
+        to_fetch: list[str] = []
+        for tid in ordered:
+            cached = self.repo.get_tweet(tid)
+            if cached and not fresh:
+                out[tid] = cached
+            elif self.repo.negative(f"tweet:{tid}") and not fresh:
+                continue
+            else:
+                to_fetch.append(tid)
+        n_cached = len(out)
+        fetched = 0
+        client = self._maybe_client() if to_fetch else None
+        if client is not None:
+            from .xapi import XApiError
+            try:
+                result = client.lookup_tweets(to_fetch)
+            except XApiError:
+                result = None
+            if result is not None:
+                con = connect(self.repo.db_path)
+                try:
+                    ingest_lookup(con, result, source="x_bridge_batch")
+                finally:
+                    con.close()
+                got = set(result.get("tweets", {}))
+                for tid in to_fetch:
+                    if tid in got:
+                        self.repo.mark_fresh(f"tweet:{tid}", "tweet", config.METRICS_TTL)
+                        t = self.repo.get_tweet(tid)
+                        if t:
+                            out[tid] = t
+                            fetched += 1
+                    else:
+                        self.repo.mark_negative(f"tweet:{tid}", "notfound")
+        return {
+            "tweets": [out[t] for t in ordered if t in out],
+            "missing": [t for t in ordered if t not in out],
+            "requested": len(ordered), "from_cache": n_cached, "fetched": fetched,
+        }
+
     # ----- user profile -----
 
     def get_user(self, handle_or_id: str, fresh: bool = False) -> Optional[dict]:
