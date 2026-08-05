@@ -113,13 +113,15 @@ class Cache:
                 to_fetch.append(tid)
         n_cached = len(out)
         fetched = 0
+        api_error = None
         client = self._maybe_client() if to_fetch else None
         if client is not None:
             from .xapi import XApiError
             try:
                 result = client.lookup_tweets(to_fetch)
-            except XApiError:
+            except XApiError as e:
                 result = None
+                api_error = e.status
             if result is not None:
                 con = connect(self.repo.db_path)
                 try:
@@ -140,6 +142,7 @@ class Cache:
             "tweets": [out[t] for t in ordered if t in out],
             "missing": [t for t in ordered if t not in out],
             "requested": len(ordered), "from_cache": n_cached, "fetched": fetched,
+            "api_error": api_error,
         }
 
     # ----- user profile -----
