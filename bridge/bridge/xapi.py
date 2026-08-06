@@ -115,16 +115,24 @@ class XClient:
         page = self._call("/tweets/search/recent", params, kind="search")
         return page, page.get("meta", {}).get("next_token")
 
-    def user_timeline(self, uid: str, start_time: str, end_time: str, token: str = None):
-        """One page of a user's timeline. Returns (page, next_token)."""
+    def user_timeline(self, uid: str, start_time: str, end_time: str, token: str = None,
+                      lean: bool = False):
+        """One page of a user's timeline. Returns (page, next_token).
+
+        lean=True drops the referenced_tweets.id and media expansions. Those
+        expansions are billed as additional posts/media (~75 extra billable
+        objects per page in practice), so corpus-building pulls that only need
+        the author's own text should always use lean mode.
+        """
         params = {
             "max_results": "100", "start_time": start_time, "end_time": end_time,
             "tweet.fields": "created_at,conversation_id,referenced_tweets,in_reply_to_user_id,"
                             "entities,note_tweet,attachments,public_metrics,author_id",
-            "expansions": "referenced_tweets.id,attachments.media_keys,author_id",
-            "media.fields": "type,url,preview_image_url,width,height,alt_text",
+            "expansions": "author_id" if lean else "referenced_tweets.id,attachments.media_keys,author_id",
             "user.fields": "username,name",
         }
+        if not lean:
+            params["media.fields"] = "type,url,preview_image_url,width,height,alt_text"
         if token:
             params["pagination_token"] = token
         page = self._call(f"/users/{uid}/tweets", params, kind="timeline")

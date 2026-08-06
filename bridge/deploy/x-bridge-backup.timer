@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily xgate archive backup to S3
+
+[Timer]
+OnCalendar=*-*-* 04:17:00 UTC
+# Catch up if the box was down when the timer should have fired.
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

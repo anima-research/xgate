@@ -1,0 +1,16 @@
+[Unit]
+Description=xgate archive backup to S3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Invoked via bash rather than relying on the file's exec bit: the repo's
+# deploy/ dir is mirrored onto this host by a sync that does not preserve
+# modes, which would otherwise silently break the timer with 203/EXEC.
+ExecStart=/bin/bash /home/antra/x-bridge/deploy/backup-to-s3.sh
+# Snapshot + compress + upload of ~120MB; generous ceiling so a slow link
+# fails loudly rather than hanging forever.
+TimeoutStartSec=3600
+Nice=10
+IOSchedulingClass=idle
