@@ -1,5 +1,9 @@
 """Ingest X API v2 payloads into the cache. Lifted from twitter_backfill.py,
-adapted to take a live connection and be idempotent (INSERT OR REPLACE).
+adapted to take a live connection and be idempotent (UPSERT on tweet_id).
+
+tweets_fts is kept in sync by triggers on `tweets` (schema.sql), so ingest
+never rebuilds the FTS index — a full rebuild is O(cache) and the cache holds
+millions of rows.
 """
 
 from __future__ import annotations
@@ -18,12 +22,26 @@ def insert_tweet(cur: sqlite3.Cursor, t: dict, username: str, source: str) -> No
             reply_to = r["id"]
             break
     pm = t.get("public_metrics") or {}
+    # UPSERT, not INSERT OR REPLACE: REPLACE deletes the row, which wiped
+    # columns the API doesn't carry (tier, quoted_tweet_id, reply_to_user_id,
+    # reply_to_username from archive imports) and changed the rowid under the
+    # external-content FTS index. API values win where present; blanks don't
+    # erase what the cache already knows.
     cur.execute(
-        "INSERT OR REPLACE INTO tweets "
+        "INSERT INTO tweets "
         "(tweet_id, author_id, author_username, full_text, created_at, "
         " reply_to_tweet_id, reply_to_username, conversation_id, "
         " retweet_count, favorite_count, source) "
-        "VALUES (?,?,?,?,?,?,NULL,?,?,?,?)",
+        "VALUES (?,?,?,?,?,?,NULL,?,?,?,?) "
+        "ON CONFLICT(tweet_id) DO UPDATE SET "
+        "  author_id=COALESCE(excluded.author_id, tweets.author_id), "
+        "  author_username=COALESCE(NULLIF(excluded.author_username, ''), tweets.author_username), "
+        "  full_text=COALESCE(NULLIF(excluded.full_text, ''), tweets.full_text), "
+        "  created_at=COALESCE(excluded.created_at, tweets.created_at), "
+        "  reply_to_tweet_id=COALESCE(excluded.reply_to_tweet_id, tweets.reply_to_tweet_id), "
+        "  conversation_id=COALESCE(excluded.conversation_id, tweets.conversation_id), "
+        "  retweet_count=excluded.retweet_count, favorite_count=excluded.favorite_count, "
+        "  source=excluded.source",
         (t["id"], t.get("author_id"), username, tweet_text(t), t.get("created_at"),
          reply_to, t.get("conversation_id"),
          pm.get("retweet_count", 0), pm.get("like_count", 0), source),
@@ -92,7 +110,6 @@ def ingest_page(con: sqlite3.Connection, page: dict, source: str) -> list[str]:
         insert_tweet(cur, t, uname, source)
         insert_media(cur, t, media, source)
         insert_urls(cur, t)
-    cur.execute("INSERT INTO tweets_fts(tweets_fts) VALUES('rebuild')")
     con.commit()
     return new_ids
 
@@ -108,7 +125,5 @@ def ingest_lookup(con: sqlite3.Connection, result: dict, source: str) -> int:
         insert_media(cur, t, media, source)
         insert_urls(cur, t)
         n += 1
-    if n:
-        cur.execute("INSERT INTO tweets_fts(tweets_fts) VALUES('rebuild')")
     con.commit()
     return n

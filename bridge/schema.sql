@@ -71,3 +71,27 @@ CREATE TABLE IF NOT EXISTS api_cost_ledger (
 
 CREATE INDEX IF NOT EXISTS idx_ledger_ts ON api_cost_ledger(ts);
 CREATE INDEX IF NOT EXISTS idx_negcache_expires ON negative_cache(expires_at);
+
+-- Exact-handle lookups (timeline, resolve_handle, get_user, search author=)
+-- filter on author_username; without this they full-scan `tweets`.
+CREATE INDEX IF NOT EXISTS idx_tweets_username ON tweets(author_username);
+
+-- Keep the external-content tweets_fts index in sync row by row. Ingest used to
+-- run a full 'rebuild' per write, which is O(cache) — fine at 600k rows, minutes
+-- per write at millions. These assume the index is in sync when created (it
+-- is after any rebuild); `INSERT INTO tweets_fts(tweets_fts, rank)
+-- VALUES('integrity-check', 1)` verifies it against `tweets`.
+CREATE TRIGGER IF NOT EXISTS tweets_fts_ai AFTER INSERT ON tweets BEGIN
+    INSERT INTO tweets_fts(rowid, tweet_id, full_text, author_username)
+    VALUES (new.rowid, new.tweet_id, new.full_text, new.author_username);
+END;
+CREATE TRIGGER IF NOT EXISTS tweets_fts_ad AFTER DELETE ON tweets BEGIN
+    INSERT INTO tweets_fts(tweets_fts, rowid, tweet_id, full_text, author_username)
+    VALUES ('delete', old.rowid, old.tweet_id, old.full_text, old.author_username);
+END;
+CREATE TRIGGER IF NOT EXISTS tweets_fts_au AFTER UPDATE OF tweet_id, full_text, author_username ON tweets BEGIN
+    INSERT INTO tweets_fts(tweets_fts, rowid, tweet_id, full_text, author_username)
+    VALUES ('delete', old.rowid, old.tweet_id, old.full_text, old.author_username);
+    INSERT INTO tweets_fts(rowid, tweet_id, full_text, author_username)
+    VALUES (new.rowid, new.tweet_id, new.full_text, new.author_username);
+END;

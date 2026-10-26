@@ -111,8 +111,7 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()
             deleted = row["tweet_id"] if row else None
             if deleted:
-                con.execute("DELETE FROM tweets WHERE tweet_id = ?", (deleted,))
-                con.execute("INSERT INTO tweets_fts(tweets_fts) VALUES('rebuild')")
+                con.execute("DELETE FROM tweets WHERE tweet_id = ?", (deleted,))  # FTS via trigger
             con.execute("DELETE FROM resource_freshness WHERE resource_key = ?", (f"timeline:{author_id}",))
             con.commit()
         finally:

@@ -28,6 +28,9 @@ def connect(path=None) -> sqlite3.Connection:
     con.execute("PRAGMA journal_mode = WAL")
     con.execute("PRAGMA busy_timeout = 5000")
     con.execute("PRAGMA foreign_keys = ON")
+    # So rows deleted by an INSERT OR REPLACE conflict fire the tweets_fts
+    # delete trigger too (SQLite skips delete triggers there otherwise).
+    con.execute("PRAGMA recursive_triggers = ON")
     return con
 
 
@@ -390,13 +393,23 @@ class Repo:
     # ----- cost ledger -----
 
     def migrate(self) -> None:
-        """Idempotent column adds for an already-running bridge (the init script
-        handles fresh seeds). Adds api_cost_ledger.actor for per-token attribution."""
+        """Idempotent schema upkeep for an already-running bridge (the init script
+        handles fresh seeds). Adds api_cost_ledger.actor for per-token attribution,
+        and applies schema.sql (indexes + the tweets_fts sync triggers)."""
         con = self._con()
         try:
             cols = {r[1] for r in con.execute("PRAGMA table_info(api_cost_ledger)")}
             if "actor" not in cols:
                 con.execute("ALTER TABLE api_cost_ledger ADD COLUMN actor TEXT")
+                con.commit()
+            had_triggers = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='tweets_fts_ai'"
+            ).fetchone()
+            con.executescript(config.SCHEMA_SQL.read_text())
+            if not had_triggers:
+                # First run with triggers: resync once so they start from a
+                # consistent index. Later writes stay in sync incrementally.
+                con.execute("INSERT INTO tweets_fts(tweets_fts) VALUES('rebuild')")
                 con.commit()
         finally:
             con.close()
