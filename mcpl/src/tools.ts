@@ -56,8 +56,8 @@ export const TOOLS: ToolDef[] = [
     name: 'lookup_tweet',
     featureSet: FS_READ,
     description:
-      'One tweet, with what it answers and how much of its thread is cached. Comes from the cache where the tweet is there. ' +
-      'fresh: true asks X for it again, which is paid for per tweet: for when a current count of likes matters. ' +
+      'One tweet, with what it answers and how much of its thread is cached. A cached tweet costs nothing; one that is not cached is fetched from X, ' +
+      'which is paid for (a cent or two). fresh: true fetches it again even so: for when a current count of likes matters. ' +
       'transcribe: true has its images described in words first.',
     inputSchema: {
       type: 'object',
@@ -100,7 +100,8 @@ export const TOOLS: ToolDef[] = [
     name: 'user_timeline',
     featureSet: FS_READ,
     description:
-      'An account\'s tweets, newest first, replies included. before and since page through the cache or pick a stretch of time ' +
+      'An account\'s tweets, newest first, replies included. What it posted since the cache last looked is fetched from X first, ' +
+      'at most every quarter hour, and paid for per new tweet. before and since page through the cache or pick a stretch of time ' +
       '(since: "2024-01-01", before: "2024-02-01"); with either, only the cache answers.',
     inputSchema: {
       type: 'object',
@@ -131,11 +132,14 @@ export const TOOLS: ToolDef[] = [
     name: 'search_tweets',
     featureSet: FS_READ,
     description:
-      'Search the cached tweets and the descriptions of their images. query is full-text syntax: words are all required, OR and NOT work, ' +
+      'Search the cached tweets and the descriptions of their images, which costs nothing. query is full-text syntax: words are all required, OR and NOT work, ' +
       'and a phrase, a handle or anything with punctuation goes in double quotes ("@handle", "c++"). With a query the best matches come first, ' +
       'or the newest with order: "recent"; without one, the filters alone pick tweets, newest first. At least one of query, author, since, until and tier is needed. ' +
       'tier is a label only the original curated archive carries (about 130,000 tweets): spine is @repligate, cast is fifteen accounts close to them, ' +
-      'context and bridge are other people\'s tweets around those.',
+      'context and bridge are other people\'s tweets around those. ' +
+      'fresh: true has X search its last seven days for the query first and adds what it finds to the cache: that is paid for per tweet found and per author, ' +
+      'about a dollar for the hundred tweets one search can return, so it is for when the cache is not enough. It takes a query alone, no filters, ' +
+      'and X reads the query by its own rules: plain words or one quoted phrase work in both.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,6 +149,7 @@ export const TOOLS: ToolDef[] = [
         until: { type: 'string', description: 'Only tweets before this time (ISO date or timestamp).' },
         tier: { type: 'string', enum: ['spine', 'cast', 'context', 'bridge'], description: 'Only tweets with this label of the curated archive.' },
         order: { type: 'string', enum: ['relevance', 'recent'], description: 'With a query: best matches first (the default) or newest first.' },
+        fresh: { type: 'boolean', description: 'Have X search the last seven days for the query first (paid, about a dollar a search). A query alone, no filters.' },
         limit: { type: 'number', description: 'The most tweets to return (default 30, at most 200).' },
         ...FORMAT,
       },
@@ -196,9 +201,9 @@ export const TOOLS: ToolDef[] = [
     featureSet: FS_FEED,
     toolset: SOURCES_TOOLSET,
     description:
-      'Follow an account, a search or a handle\'s mentions in your feed. kind "timeline" is an account\'s tweets; "search" is a query as search_tweets takes it; ' +
-      '"mentions" is tweets that name a handle, as far as the cache has them (X does not give this server an account\'s mentions directly). ' +
-      'A new source starts quiet: its tweets wait for feed_read. Adding one you already follow changes nothing.',
+      'Follow an account, a search or a handle\'s mentions in your feed. kind "timeline" is an account\'s tweets, kept current from X (paid per new tweet). ' +
+      '"search" is a query as search_tweets takes it, and "mentions" is tweets that name a handle: both show what the cache has, which grows as timelines are read ' +
+      'and when someone runs a fresh search, and cost nothing. A new source starts quiet: its tweets wait for feed_read. Adding one you already follow changes nothing.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -223,7 +228,8 @@ export const TOOLS: ToolDef[] = [
     toolset: SOURCES_TOOLSET,
     description:
       'Set a source to notify (its new tweets are sent to you), quiet (they wait for feed_read) or muted (feed_read leaves it out). ' +
-      'A notifying source\'s tweets reach you within about twenty minutes of being posted and count as read once sent; only an account\'s timeline can notify. A muted source stays in the list.',
+      'A notifying timeline is checked against X, so its tweets reach you within about twenty minutes of being posted; a notifying search or mentions source tells you ' +
+      'what reaches the cache. Tweets sent to you count as read. A muted source stays in the list.',
     inputSchema: { type: 'object', properties: { source: SOURCE, mode: { type: 'string', enum: [...FEED_MODES] } }, required: ['source', 'mode'] },
   },
 ];
@@ -245,7 +251,12 @@ const handleOf = (value: unknown) => String(value ?? '').trim().replace(/^@/, ''
 const clamp = (value: unknown, dflt: number, max: number) => (typeof value === 'number' && value >= 1 ? Math.min(Math.floor(value), max) : dflt);
 const isImage = (m: BridgeMedia) => !m.type || m.type === 'photo' || m.type === 'animated_gif';
 
-/** The latest tweets of a source, newest first. The bridge fetches from X first where it may and its copy is old. */
+/**
+ * The latest tweets of a source, newest first. A timeline is refreshed from X
+ * first where the bridge may and its copy is old (paid per new tweet). A search
+ * or a handle's mentions are read from the cache alone: asking X to search
+ * again is paid for in full every time, so a feed never does it.
+ */
 async function latestOf(bridge: BridgeClient, s: FeedSource, limit: number): Promise<BridgeTweet[]> {
   if (s.kind === 'timeline') return bridge.userTimeline(s.value, limit);
   return bridge.search(queryOf(s), limit, { recent: true });
@@ -261,13 +272,11 @@ const queryOf = (s: FeedSource) => (s.kind === 'mentions' ? `"@${s.value}"` : s.
 export async function unreadFor(bridge: BridgeClient, state: FeedState, s: FeedSource, first: number): Promise<BridgeTweet[]> {
   const readTo = state.readTo[s.id];
   if (!readTo) return latestOf(bridge, s, first);
-  // The plain read lets the bridge refresh from X; the read from `readTo` on
-  // is answered by the cache alone, and is the complete one.
-  await latestOf(bridge, s, 1);
-  const since = s.kind === 'timeline'
-    ? await bridge.userTimeline(s.value, UNREAD_CAP, undefined, false, readTo)
-    : await bridge.search(queryOf(s), UNREAD_CAP, { since: readTo, recent: true });
-  return unreadOf(state, s, since);
+  if (s.kind !== 'timeline') return unreadOf(state, s, await bridge.search(queryOf(s), UNREAD_CAP, { since: readTo, recent: true }));
+  // The plain read lets the bridge refresh the timeline from X; the read from
+  // `readTo` on is answered by the cache alone, and is the complete one.
+  await bridge.userTimeline(s.value, 1);
+  return unreadOf(state, s, await bridge.userTimeline(s.value, UNREAD_CAP, undefined, false, readTo));
 }
 
 function bridgeFailure(tool: string, e: unknown): ToolResult {
@@ -357,11 +366,13 @@ async function run(ctx: ToolContext, who: Caller, name: string, args: Record<str
         tier: args.tier ? String(args.tier) : undefined,
       };
       const recent = args.order === 'recent';
+      const fresh = args.fresh === true;
+      if (fresh && (!query || Object.values(filters).some(Boolean))) return fail('search_tweets: fresh takes a query alone. X is not asked when a filter is given, so drop the filters, or drop fresh.');
       if (!query && !Object.values(filters).some(Boolean)) return fail('search_tweets: give a query, or at least one of author, since, until and tier.');
-      const tweets = await bridge.search(query, clamp(args.limit, 30, 200), { ...filters, recent });
+      const tweets = await bridge.search(query, clamp(args.limit, 30, 200), { ...filters, recent, fresh });
       if (full) return json({ count: tweets.length, tweets });
       const title = [
-        query ? `search: ${query}${recent ? ' (newest first)' : ''}` : 'cached tweets',
+        query ? `search: ${query}${recent ? ' (newest first)' : ''}${fresh ? ' (X searched first)' : ''}` : 'cached tweets',
         filters.author ? `by @${filters.author}` : '',
         filters.tier ? `tier ${filters.tier}` : '',
         filters.since || filters.until ? `${filters.since ?? 'the start'} → ${filters.until ?? 'now'}` : '',
@@ -439,8 +450,6 @@ async function run(ctx: ToolContext, who: Caller, name: string, args: Record<str
       if (!SOURCE_KINDS.includes(kind)) return fail(`feed_add: kind is one of ${SOURCE_KINDS.join(', ')}.`);
       if (!value.replace(/^@/, '')) return fail('feed_add: value is needed: the @handle, or the query.');
       if (!FEED_MODES.includes(mode)) return fail(`feed_add: mode is one of ${FEED_MODES.join(', ')}.`);
-      const refusal = notifyRefusal(kind, mode);
-      if (refusal) return fail(`feed_add: ${refusal}`);
       const state = ctx.feeds.get(who.client);
       const { state: next, source, added } = addSource(state, { kind, value, mode, label: args.label ? String(args.label) : undefined });
       if (!added) return text(`${sourceName(source)} is already in your feed (${source.mode}).`);
@@ -465,8 +474,6 @@ async function run(ctx: ToolContext, who: Caller, name: string, args: Record<str
       const mode = String(args.mode) as FeedMode;
       if (!source) return fail(`feed_set: ${JSON.stringify(String(args.source ?? ''))} is not in your feed. feed_show lists your sources.`);
       if (!FEED_MODES.includes(mode)) return fail(`feed_set: mode is one of ${FEED_MODES.join(', ')}.`);
-      const refusal = notifyRefusal(source.kind, mode);
-      if (refusal) return fail(`feed_set: ${refusal}`);
       const next = setMode(state, source, mode);
       ctx.feeds.set(who.client, mode === 'notify' ? startFromNow(next, source) : next);
       return text(`${sourceName(source)} is now ${mode}.${notifyNote(mode, who)}`);
@@ -474,13 +481,6 @@ async function run(ctx: ToolContext, who: Caller, name: string, args: Record<str
     default:
       return fail(`Unknown tool: ${name}`);
   }
-}
-
-/** A search asks X for up to a hundred tweets each time it is checked, new or not, so only timelines are watched. */
-function notifyRefusal(kind: FeedSourceKind, mode: FeedMode): string | null {
-  return mode === 'notify' && kind !== 'timeline'
-    ? `only an account's timeline can notify: checking a ${kind === 'search' ? 'search' : 'handle\'s mentions'} again and again is paid for in full each time. It can be quiet, and read with feed_read.`
-    : null;
 }
 
 function notifyNote(mode: FeedMode, who: Caller): string {

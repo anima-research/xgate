@@ -30,11 +30,11 @@ export const DECLARATIONS: FeatureSetMap = {
     rollback: false,
     tagOntology: {
       tags: {
-        'x:new-tweets': { desc: 'New tweets from an account whose timeline you set to notify in your feed. Carries x:from:<handle>. They count as read in the feed once this event is taken.', facet: 'kind' },
+        'x:new-tweets': { desc: 'New tweets in a source of your feed that you set to notify. Carries the kind of source (x:timeline, x:mentions or x:search), and x:from:<handle> for a timeline. They count as read in the feed once this event is taken.', facet: 'kind' },
         'x:has-media': { desc: 'At least one of the tweets has an image or a video.', facet: 'content' },
       },
       suggestedTreatment: [
-        { tagsAny: ['x:new-tweets'], behavior: { debounce: 60_000 }, rationale: 'You asked to be told when these accounts post. An account often posts several tweets in a row, which this turns into one wake a minute after the last. Without this, they sit in your context until something else wakes you.' },
+        { tagsAny: ['x:new-tweets'], behavior: { debounce: 60_000 }, rationale: 'You asked to be told of new tweets in these sources. An account often posts several in a row, which this turns into one wake a minute after the last. Without this, they sit in your context until something else wakes you.' },
       ],
       open: true,
     },
@@ -261,16 +261,16 @@ export class Session {
     const shown = unread.slice(0, EVENT_TWEETS).reverse();
     const left = unread.length - shown.length;
     const text = [
-      `[xgate] ${unread.length} new tweet${unread.length === 1 ? '' : 's'} from @${source.value}${source.label ? ` ("${source.label}")` : ''}`,
+      `[xgate] ${unread.length} new tweet${unread.length === 1 ? '' : 's'} ${source.kind === 'timeline' ? `from @${source.value}` : source.kind === 'mentions' ? `that mention${unread.length === 1 ? 's' : ''} @${source.value}` : `matching the search ${JSON.stringify(source.value)}`}${source.label ? ` ("${source.label}")` : ''}`,
       shown.map((t) => renderTweet(t)).join('\n\n'),
-      `${left > 0 ? `${left} earlier one${left === 1 ? ' is' : 's are'} not shown: user_timeline reads them. ` : ''}${unread.length === 1 ? 'It is' : 'They are'} marked read in your feed.`,
+      `${left > 0 ? `${left} earlier one${left === 1 ? ' is' : 's are'} not shown. ` : ''}${unread.length === 1 ? 'It is' : 'They are'} marked read in your feed.`,
     ].join('\n\n');
     const params: PushEventParams = {
       featureSet: FS_EVENTS,
-      eventId: `tweets_${source.value}_${unread[0]!.tweet_id}`,
+      eventId: `tweets_${source.id.replace(/[^A-Za-z0-9_-]/g, '_')}_${unread[0]!.tweet_id}`,
       timestamp: new Date().toISOString(),
       origin: { server: SERVER_NAME, source: source.id, tweets: shown.map((t) => t.tweet_id) },
-      tags: ['x:new-tweets', `x:from:${source.value.toLowerCase()}`, ...(shown.some((t) => t.media?.length) ? ['x:has-media'] : [])],
+      tags: ['x:new-tweets', `x:${source.kind}`, ...(source.kind === 'timeline' ? [`x:from:${source.value.toLowerCase()}`] : []), ...(shown.some((t) => t.media?.length) ? ['x:has-media'] : [])],
       payload: { content: [{ type: 'text', text }] },
     };
     try {

@@ -12,7 +12,7 @@ Reading X/Twitter for agents, through the xgate bridge: an MCPL 0.5 server (and 
 | `get_thread` | the thread around any tweet, as a tree |
 | `peek_thread`, `peek_timeline` | sizes without the tweets |
 | `user_timeline` | an account's tweets, newest first, or a stretch of time |
-| `search_tweets` | full-text search with filters, best match or newest first |
+| `search_tweets` | full-text search of the cache with filters, best match or newest first; `fresh: true` has X searched first |
 | `get_user` | a profile |
 | `get_image` | an image itself, as a picture |
 | `transcribe_image` | an image described in words |
@@ -55,7 +55,21 @@ The feed is kept by this server, one file per agent in `state/`, so it is there 
 
 A session looks at its agent's `notify` sources every five minutes. What is unread there is sent as one push event per source (tags `x:new-tweets`, `x:from:<handle>`, `x:has-media`) and marked read once the host takes it, so the feed and the events never tell the same tweet twice. The first look comes ten seconds after the host is ready and covers what was posted while the agent was away.
 
-Only timelines can notify. The bridge refreshes a timeline from the newest tweet it has, so a check costs what was newly posted; a search is paid for in full, up to a hundred tweets, every time it is refreshed. The bridge refreshes a timeline at most every fifteen minutes, which is why a tweet arrives within about twenty minutes of being posted.
+A timeline is kept current from X: the bridge refreshes it from the newest tweet it has, at most every fifteen minutes, so a check costs what was newly posted and a tweet arrives within about twenty minutes of being posted. A search or mentions source is read from the cache alone and notifies of what reaches the cache.
+
+## What costs money
+
+The bridge pays X per tweet, author and image it fetches. This server asks for a fetch only where the tool text says so:
+
+| What | When X is asked | Roughly |
+|---|---|---|
+| `lookup_tweet` | the tweet is not cached, or `fresh: true` | a cent or two |
+| `user_timeline`, a timeline source of a feed | the cached timeline is over fifteen minutes old | per new tweet |
+| `get_user` | no profile is stored | a cent |
+| `get_thread` with `fresh: true` | always | up to a hundred tweets |
+| `search_tweets` with `fresh: true` | always | about a dollar |
+
+Everything else is answered by the cache. A plain `search_tweets`, and a feed's search and mentions sources, never have X searched: a recent search returns up to a hundred tweets and is paid for in full every time it runs.
 
 A host that leaves `x.events` off gets no events; `feed_set` says so when an agent asks for `notify`.
 
@@ -127,4 +141,4 @@ After a rebuild or a change to `config.json`: `launchctl kickstart -k gui/$(id -
 
 ## What it needs of the bridge
 
-A bridge with `/thread/:id` taking any tweet of a thread and `/search?order=recent` (both in this repository's `bridge/`). Against an older bridge the server still runs: threads are then found by X's conversation id alone, which about half the cache lacks, and search sources of a feed are read best match first, which makes their unread counts unreliable.
+A bridge with `/thread/:id` taking any tweet of a thread, `/search?order=recent` and `/search?cached=1` (all in this repository's `bridge/`). Against an older bridge the server still runs, with three differences: threads are found by X's conversation id alone, which about half the cache lacks; search sources of a feed are read best match first, which makes their unread counts unreliable; and every plain search has X searched, which is paid for.

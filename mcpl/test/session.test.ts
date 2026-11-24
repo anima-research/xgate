@@ -152,6 +152,31 @@ test('a query the full-text index refuses is explained, not passed on raw', asyn
   s.close();
 });
 
+test('a search asks only the cache unless a fresh one is asked for', async () => {
+  const s = await connect();
+  const searches = () => s.bridge.requests.filter((u) => u.startsWith('/search'));
+  await s.say('search_tweets', { query: 'gardens' });
+  assert.match(searches().at(-1)!, /cached=1/);
+  assert.doesNotMatch(searches().at(-1)!, /fresh/);
+  assert.match(await s.say('search_tweets', { query: 'gardens', fresh: true }), /^search: gardens \(X searched first\) · /);
+  assert.match(searches().at(-1)!, /fresh=1/);
+  assert.doesNotMatch(searches().at(-1)!, /cached/);
+  const before = searches().length;
+  const r = await s.call('search_tweets', { query: 'gardens', author: 'dov', fresh: true });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0]!.text!, /^search_tweets: fresh takes a query alone\./);
+  assert.equal(searches().length, before, 'the bridge was not asked');
+  // A feed's search and mentions sources never have X searched.
+  await s.say('feed_add', { kind: 'search', value: 'gardens' });
+  await s.say('feed_add', { kind: 'mentions', value: '@bea' });
+  await s.say('feed_read');
+  await s.say('feed_show');
+  await s.say('feed_read', { latest: true });
+  assert.ok(searches().slice(before).length >= 6);
+  assert.ok(searches().slice(before).every((u) => u.includes('cached=1') && !u.includes('fresh')), searches().slice(before).join(' '));
+  s.close();
+});
+
 test('the feed is kept between sessions, per agent', async () => {
   const first = await connect();
   await first.say('feed_add', { kind: 'timeline', value: '@dov', label: 'janus' });
@@ -229,7 +254,7 @@ test('new tweets of a source set to notify are sent as one event, and are read b
   await s.session.check();
   assert.equal(s.events.length, 1);
   const e = s.events[0]!;
-  assert.deepEqual([e.featureSet, e.eventId, e.tags], ['x.events', 'tweets_dov_204', ['x:new-tweets', 'x:from:dov', 'x:has-media']]);
+  assert.deepEqual([e.featureSet, e.eventId, e.tags], ['x.events', 'tweets_timeline_dov_204', ['x:new-tweets', 'x:timeline', 'x:from:dov', 'x:has-media']]);
   assert.equal(e.payload.content[0]!.text, [
     '[xgate] 2 new tweets from @dov',
     '',
@@ -258,17 +283,19 @@ test('an event the host does not take leaves its tweets unread', async () => {
   s.close();
 });
 
-test('a source set to notify starts from now, and only a timeline can notify', async () => {
+test('a source set to notify starts from now; a mentions source notifies of what reaches the cache', async () => {
   const s = await connect();
   // Never read: its past is not sent.
   await s.say('feed_add', { kind: 'timeline', value: '@dov', mode: 'notify' });
+  await s.say('feed_add', { kind: 'mentions', value: '@bea', mode: 'notify', label: 'me' });
   await s.session.check();
   assert.equal(s.events.length, 0);
-  for (const kind of ['search', 'mentions']) {
-    const r = await s.call('feed_add', { kind, value: 'opus', mode: 'notify' });
-    assert.equal(r.isError, true);
-    assert.match(r.content[0]!.text!, /^feed_add: only an account's timeline can notify/);
-  }
+  s.bridge.tweets.push(tweet('301', 'cy', 'what does @bea think?', new Date(Date.now() + 60_000).toISOString()));
+  await s.session.check();
+  assert.equal(s.events.length, 1);
+  assert.deepEqual([s.events[0]!.eventId, s.events[0]!.tags], ['tweets_mentions_bea_301', ['x:new-tweets', 'x:mentions']]);
+  assert.match(s.events[0]!.payload.content[0]!.text, /^\[xgate\] 1 new tweet that mentions @bea \("me"\)\n\n@cy · /);
+  assert.match(s.events[0]!.payload.content[0]!.text, /\n\nIt is marked read in your feed\.$/);
   s.close();
 });
 

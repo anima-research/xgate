@@ -33,6 +33,20 @@ class CountingCache(Cache):
         return [{"tweet_id": "x"}]
 
 
+def test_a_search_marked_cached_never_fetches():
+    class Searching(CountingCache):
+        def refresh(self, resource_key, force=False):
+            self.fetches += 1
+            return []
+
+    c = Searching()
+    c.search("zzznotaword_cached_probe", cached=True)
+    c.search("zzznotaword_cached_probe", cached=True, fresh=True)
+    assert c.fetches == 0, "a cached search asked X"
+    c.search("zzznotaword_cached_probe")
+    assert c.fetches == 1, "a plain search with fetching on reads through"
+
+
 def test_concurrent_refresh_fetches_once():
     c = CountingCache()
     # ensure the key starts stale

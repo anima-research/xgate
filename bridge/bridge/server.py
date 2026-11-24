@@ -277,7 +277,8 @@ class Handler(BaseHTTPRequestHandler):
             return 400, {"error": "provide q and/or a filter (author, since, until, tier)"}
         tweets = _cache.search(q, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"),
                                author=author, since=since, until=until, tier=tier,
-                               recent=(qs.get("order") or [""])[0] == "recent")
+                               recent=(qs.get("order") or [""])[0] == "recent",
+                               cached=_truthy(qs, "cached"))
         tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"query": q, "count": len(tweets), "tweets": tweets}
 

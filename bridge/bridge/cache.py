@@ -180,11 +180,13 @@ class Cache:
 
     def search(self, query: str = None, limit: int = 50, fresh: bool = False,
                author: str = None, since: str = None, until: str = None,
-               tier: str = None, recent: bool = False) -> list[dict]:
+               tier: str = None, recent: bool = False, cached: bool = False) -> list[dict]:
         # Live read-through only for a plain recent text search; filtered/range
-        # queries (or query-less filters) are served from cache, no spend.
+        # queries (or query-less filters) are served from cache, no spend. So is
+        # any search the caller marked `cached`: a recent search is paid for in
+        # full (up to a hundred posts, and their authors) every time it runs.
         filtered = any((author, since, until, tier)) or not query
-        if query and not filtered and (fresh or not self.repo.is_fresh(f"search:{query}")) and self._maybe_client():
+        if query and not filtered and not cached and (fresh or not self.repo.is_fresh(f"search:{query}")) and self._maybe_client():
             self.refresh(f"search:{query}", force=fresh)
         return self.repo.search(query, limit=limit, author=author, since=since, until=until, tier=tier,
                                 recent=recent)

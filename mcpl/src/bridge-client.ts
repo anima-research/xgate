@@ -215,7 +215,9 @@ export class BridgeClient {
   }
 
   /** Query the archive (FTS5). `query` is optional — omit for a pure filter/range
-   *  query. Filters: author, since (inclusive ISO), until (exclusive ISO), tier. */
+   *  query. Filters: author, since (inclusive ISO), until (exclusive ISO), tier.
+   *  Only the cache answers, unless `fresh`: then the bridge has X search the
+   *  query's last week first, which is paid for in full each time. */
   async search(query?: string, limit = 50, f: SearchFilters = {}): Promise<BridgeTweet[]> {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (query) qs.set('q', query);
@@ -224,6 +226,7 @@ export class BridgeClient {
     if (f.until) qs.set('until', f.until);
     if (f.tier) qs.set('tier', f.tier);
     if (f.recent) qs.set('order', 'recent');
+    qs.set(f.fresh ? 'fresh' : 'cached', '1');
     const r = await this.get<{ tweets: BridgeTweet[] }>(`/search?${qs.toString()}`);
     return r?.tweets ?? [];
   }
@@ -250,6 +253,8 @@ export interface SearchFilters {
   tier?: string;
   /** With a query: newest first instead of best match first. */
   recent?: boolean;
+  /** Have X search the query first (a query alone, no filters). */
+  fresh?: boolean;
 }
 
 export interface BridgeThreadPreview {
