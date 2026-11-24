@@ -75,10 +75,12 @@ def test_concurrent_refresh_fetches_once():
 
 
 if __name__ == "__main__":
+    tests = [test_a_search_marked_cached_never_fetches, test_concurrent_refresh_fetches_once]
     try:
-        test_concurrent_refresh_fetches_once()
-        print("  ok   test_concurrent_refresh_fetches_once")
-        print("\n1/1 passed")
+        for fn in tests:
+            fn()
+            print(f"  ok   {fn.__name__}")
+        print(f"\n{len(tests)}/{len(tests)} passed")
     except AssertionError as e:
         print(f"  FAIL {e}")
         sys.exit(1)
