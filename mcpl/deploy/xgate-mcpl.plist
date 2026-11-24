@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Replace NODE_BIN (the directory holding node), CHECKOUT (this repository) and HOME_DIR (the user's home). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>ai.animalabs.xgate-mcpl</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string><string>-lc</string>
+    <string>export PATH=NODE_BIN:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin &amp;&amp; cd CHECKOUT/mcpl &amp;&amp; exec node dist/src/index.js --ws 7480 --host 127.0.0.1</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>15</integer>
+  <key>StandardOutPath</key><string>HOME_DIR/.config/xgate-mcpl/server.log</string>
+  <key>StandardErrorPath</key><string>HOME_DIR/.config/xgate-mcpl/server.log</string>
+</dict>
+</plist>

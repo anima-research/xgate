@@ -34,6 +34,35 @@ def connect(path=None) -> sqlite3.Connection:
     return con
 
 
+# The most tweets one thread read returns (see Repo.get_thread).
+THREAD_CAP = 500
+
+# The cached thread around tweet :id, as the table `down`. X's conversation id is
+# missing on archive-imported rows (about half the cache, and most of its
+# replies), so a thread is found by both of its marks:
+#   up     :id and its ancestors, over reply links, as far as they are cached
+#   convs  the conversation ids any of them carry, their own ids (a root's id is
+#          its thread's conversation id), and :id itself (a conversation id whose
+#          root tweet is not cached)
+#   down   those tweets, everything sharing one of those conversation ids, and
+#          every reply to any of them, at any depth
+_THREAD_CTE = """
+WITH RECURSIVE
+  up(id, parent, conv) AS (
+    SELECT tweet_id, reply_to_tweet_id, conversation_id FROM tweets WHERE tweet_id = :id
+    UNION
+    SELECT t.tweet_id, t.reply_to_tweet_id, t.conversation_id FROM tweets t JOIN up ON t.tweet_id = up.parent
+  ),
+  convs(c) AS (SELECT :id UNION SELECT conv FROM up WHERE conv IS NOT NULL UNION SELECT id FROM up),
+  down(id) AS (
+    SELECT id FROM up
+    UNION SELECT tweet_id FROM tweets WHERE tweet_id IN (SELECT c FROM convs)
+    UNION SELECT tweet_id FROM tweets WHERE conversation_id IN (SELECT c FROM convs)
+    UNION SELECT t.tweet_id FROM tweets t JOIN down ON t.reply_to_tweet_id = down.id
+  )
+"""
+
+
 class Repo:
     """Thin, intention-revealing accessors over the cache tables.
 
@@ -60,6 +89,8 @@ class Repo:
             "reply_to_tweet_id": row["reply_to_tweet_id"],
             "reply_to_username": row["reply_to_username"],
             "conversation_id": row["conversation_id"],
+            # Only archive-seeded caches have the column; the API ingest never fills it.
+            "quoted_tweet_id": row["quoted_tweet_id"] if "quoted_tweet_id" in row.keys() else None,
             "retweet_count": row["retweet_count"],
             "favorite_count": row["favorite_count"],
             "source": row["source"],
@@ -68,11 +99,25 @@ class Repo:
         }
 
     def _hydrate(self, con: sqlite3.Connection, tweets: list[dict]) -> list[dict]:
-        """Attach media + urls to a batch of normalized tweets."""
+        """Attach media + urls to a batch of normalized tweets, and name the
+        author a reply answers where the row doesn't (the API ingest stores only
+        the parent's id) and the parent is cached."""
         if not tweets:
             return tweets
         by_id = {t["tweet_id"]: t for t in tweets}
         ids = list(by_id)
+        unnamed = [t for t in tweets if t["reply_to_tweet_id"] and not t["reply_to_username"]]
+        for i in range(0, len(unnamed), 500):
+            chunk = unnamed[i:i + 500]
+            parents = {
+                r["tweet_id"]: r["author_username"] for r in con.execute(
+                    f"SELECT tweet_id, author_username FROM tweets "
+                    f"WHERE tweet_id IN ({','.join('?' * len(chunk))})",
+                    [t["reply_to_tweet_id"] for t in chunk],
+                )
+            }
+            for t in chunk:
+                t["reply_to_username"] = parents.get(t["reply_to_tweet_id"])
         marks = ",".join("?" * len(ids))
         for m in con.execute(
             f"SELECT media_id, tweet_id, media_url, media_type, width, height, transcription, alt_text "
@@ -101,14 +146,40 @@ class Repo:
         finally:
             con.close()
 
-    def get_thread(self, conversation_id: str) -> list[dict]:
+    def get_thread(self, tweet_id: str) -> dict:
+        """The cached thread a tweet belongs to, oldest-first. `tweet_id` is any
+        tweet of it, or its conversation id (see _THREAD_CTE for what belongs).
+
+        At most THREAD_CAP tweets come back: the tweet's ancestors and its own
+        replies first, then the rest from the oldest. `count` is the whole
+        thread's size."""
         con = self._con()
         try:
+            arg = {"id": tweet_id}
+            ids = [r[0] for r in con.execute(
+                _THREAD_CTE + "SELECT t.tweet_id FROM tweets t JOIN down ON down.id = t.tweet_id "
+                "ORDER BY t.created_at ASC", arg)]
+            count = len(ids)
+            if count > THREAD_CAP:
+                near = {r[0] for r in con.execute(
+                    _THREAD_CTE + ", sub(id) AS (SELECT :id UNION SELECT t.tweet_id FROM tweets t "
+                    "JOIN sub ON t.reply_to_tweet_id = sub.id) "
+                    "SELECT id FROM up UNION SELECT id FROM sub LIMIT :cap", {**arg, "cap": THREAD_CAP})}
+                keep = near | set([i for i in ids if i not in near][:THREAD_CAP - len(near)])
+                ids = [i for i in ids if i in keep]
             rows = con.execute(
-                "SELECT * FROM tweets WHERE conversation_id = ? ORDER BY created_at ASC",
-                (conversation_id,),
-            ).fetchall()
-            return self._hydrate(con, [self._tweet_row(r) for r in rows])
+                f"SELECT * FROM tweets WHERE tweet_id IN ({','.join('?' * len(ids))}) "
+                "ORDER BY created_at ASC", ids).fetchall() if ids else []
+            return {"count": count, "tweets": self._hydrate(con, [self._tweet_row(r) for r in rows])}
+        finally:
+            con.close()
+
+    def conversation_of(self, tweet_id: str) -> Optional[str]:
+        """The conversation id X gave a cached tweet, if it has one."""
+        con = self._con()
+        try:
+            row = con.execute("SELECT conversation_id FROM tweets WHERE tweet_id = ?", (tweet_id,)).fetchone()
+            return row["conversation_id"] if row else None
         finally:
             con.close()
 
@@ -220,13 +291,14 @@ class Repo:
 
     def search(self, query: Optional[str] = None, limit: int = 50, include_media: bool = True,
                author: Optional[str] = None, since: Optional[str] = None,
-               until: Optional[str] = None, tier: Optional[str] = None) -> list[dict]:
+               until: Optional[str] = None, tier: Optional[str] = None,
+               recent: bool = False) -> list[dict]:
         """Query the archive. `query` (FTS5) is optional — omit it for a pure
         filter/range query. Optional filters (applied in all modes): `author`
         (username), `since` (inclusive ISO lower bound), `until` (exclusive ISO
         upper bound), `tier` (spine/cast/context/bridge). With a query, results
-        are relevance-ranked over tweet text + media transcriptions; without one,
-        newest-first."""
+        are relevance-ranked over tweet text + media transcriptions (`recent`:
+        newest-first instead); without one, newest-first."""
         con = self._con()
         try:
             limit = min(limit, 200)
@@ -243,10 +315,11 @@ class Repo:
             extra = (" AND " + " AND ".join(conds)) if conds else ""
 
             if query:
+                order = "t.created_at DESC" if recent else "rank"
                 seen: dict[str, dict] = {}
                 for r in con.execute(
                     "SELECT t.* FROM tweets t JOIN tweets_fts f ON f.tweet_id = t.tweet_id "
-                    f"WHERE tweets_fts MATCH ?{extra} ORDER BY rank LIMIT ?",
+                    f"WHERE tweets_fts MATCH ?{extra} ORDER BY {order} LIMIT ?",
                     [query, *fparams, limit],
                 ):
                     seen.setdefault(r["tweet_id"], self._tweet_row(r))
@@ -254,11 +327,14 @@ class Repo:
                     for r in con.execute(
                         "SELECT t.* FROM tweets t JOIN media m ON m.tweet_id = t.tweet_id "
                         "JOIN media_fts f ON f.media_id = m.media_id AND f.tweet_id = m.tweet_id "
-                        f"WHERE media_fts MATCH ?{extra} ORDER BY rank LIMIT ?",
+                        f"WHERE media_fts MATCH ?{extra} ORDER BY {order} LIMIT ?",
                         [query, *fparams, limit],
                     ):
                         seen.setdefault(r["tweet_id"], self._tweet_row(r))
-                return self._hydrate(con, list(seen.values())[:limit])
+                found = list(seen.values())
+                if recent:  # text and image matches were gathered apart
+                    found.sort(key=lambda t: t["created_at"] or "", reverse=True)
+                return self._hydrate(con, found[:limit])
 
             # No query → pure filter/range query, newest-first.
             where = (" WHERE " + " AND ".join(conds)) if conds else ""
@@ -463,39 +539,36 @@ class Repo:
 
     # ----- previews (cheap aggregates, no bodies) -----
 
-    def thread_stats(self, conversation_id: str) -> dict:
+    def thread_stats(self, tweet_id: str) -> dict:
         """Summarize a cached thread without returning tweet bodies: size,
-        participants (by tweet count), time span, image count, root author."""
+        participants (by tweet count), time span, image count, root author.
+        `tweet_id` is any tweet of it, or its conversation id, as in get_thread."""
         con = self._con()
         try:
+            arg = {"id": tweet_id}
             rows = con.execute(
-                "SELECT author_username AS handle, COUNT(*) AS n "
-                "FROM tweets WHERE conversation_id = ? "
-                "GROUP BY author_username ORDER BY n DESC",
-                (conversation_id,),
+                _THREAD_CTE + "SELECT t.author_username AS handle, COUNT(*) AS n "
+                "FROM tweets t JOIN down ON down.id = t.tweet_id "
+                "GROUP BY t.author_username ORDER BY n DESC", arg,
             ).fetchall()
             participants = [
                 {"handle": r["handle"], "count": r["n"]} for r in rows if r["handle"]
             ]
             count = sum(r["n"] for r in rows)
             span = con.execute(
-                "SELECT MIN(created_at) AS first, MAX(created_at) AS last "
-                "FROM tweets WHERE conversation_id = ?",
-                (conversation_id,),
+                _THREAD_CTE + "SELECT MIN(t.created_at) AS first, MAX(t.created_at) AS last "
+                "FROM tweets t JOIN down ON down.id = t.tweet_id", arg,
             ).fetchone()
             media_count = con.execute(
-                "SELECT COUNT(*) AS n FROM media m JOIN tweets t ON t.tweet_id = m.tweet_id "
-                "WHERE t.conversation_id = ?",
-                (conversation_id,),
+                _THREAD_CTE + "SELECT COUNT(*) AS n FROM media m JOIN down ON down.id = m.tweet_id", arg,
             ).fetchone()["n"]
             root = con.execute(
-                "SELECT author_username FROM tweets "
-                "WHERE conversation_id = ? AND (tweet_id = ? OR reply_to_tweet_id IS NULL) "
-                "ORDER BY created_at ASC LIMIT 1",
-                (conversation_id, conversation_id),
+                _THREAD_CTE + "SELECT t.author_username FROM tweets t JOIN down ON down.id = t.tweet_id "
+                "WHERE t.reply_to_tweet_id IS NULL OR t.tweet_id IN (SELECT c FROM convs) "
+                "ORDER BY t.created_at ASC LIMIT 1", arg,
             ).fetchone()
             return {
-                "conversation_id": conversation_id,
+                "conversation_id": tweet_id,
                 "count": count,
                 "participants": participants,
                 "first": span["first"] if span else None,

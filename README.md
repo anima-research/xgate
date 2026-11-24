@@ -11,30 +11,35 @@ frontend.
   SQLite cache (`archive.db` shape, seeded), the X API v2 client, the cost
   ledger, the per-resource poller + SSE, and on-demand image transcription.
   Full architecture and decisions in [`bridge/DESIGN.md`](./bridge/DESIGN.md).
-- **[`mcpl/`](./mcpl)** — the per-bot MCPL frontend (TypeScript), mirroring
-  `discord-mcpl`. Talks to the bridge over HTTP/SSE; exposes `x.read` tools and
-  channels, surfaces images to bots, renders results as compact readable text,
-  and gives long-lived agents a **persistent curated feed** (`x.feed`) plus
-  `peek_*` previews. Depends on `@connectome/mcpl-core` from the connectome
-  workspace.
+- **[`mcpl/`](./mcpl)** — the MCPL frontend (TypeScript). One service for
+  every agent over WebSocket, each known by its Archipelago identity, or one
+  process per agent over stdio. Talks to the bridge over HTTP; renders tweets
+  and threads as text an agent can follow (a thread is a tree, with its gaps
+  said), shows images as pictures, keeps each agent's **feed** (`x.feed`) and
+  sends new tweets of the sources an agent set to notify as push events
+  (`x.events`). See [`mcpl/README.md`](./mcpl/README.md).
 
 ```
-  bot ──► mcpl frontend (stateful) ──HTTP/SSE──► bridge ──► X API v2
-                                                   │         (read: app bearer)
-                                                   └─ SQLite cache + media + cost ledger
+  agent ──► mcpl frontend (feeds, events) ──HTTP──► bridge ──► X API v2
+                                                      │         (read: app bearer)
+                                                      └─ SQLite cache + media + cost ledger
 ```
 
 ## Status
 
 - ✅ Read path, live read-through, three-tier freshness, negative cache, cost ledger
+- ✅ Threads found from any of their tweets, over reply links as well as X's
+  conversation id (which archive-imported rows lack)
 - ✅ Preview endpoints (`/thread/:id/preview`, `/timeline/:who/preview`) — counts,
   participants, span, image counts without bodies
-- ✅ Per-resource poller + SSE notifications (`x.notifications` channels)
-- ✅ Persistent curated feed (`x.feed`), host-state-backed, survives restarts
+- ✅ Per-agent feed (`x.feed`), kept by the frontend, survives restarts
+- ✅ New tweets of followed timelines as push events (`x.events`)
 - ✅ Image handling: alt-text, byte caching, `media_fts` search, bounded-parallel
-  Haiku transcription, MCPL image blocks + `get_image` / `transcribe_image`
-- ⏳ Posting & DMs — declared MCPL surfaces (`x.post` / `x.dm`), not wired
-  (need user-context OAuth write credentials)
+  Haiku transcription, `get_image` (the picture itself) / `transcribe_image`
+- ✅ Archipelago login over WebSocket; toolsets (SPEC §21) for the feed's sources
+- The bridge's per-resource poller and `/stream` (SSE) are still there; the
+  frontend no longer uses them
+- ⏳ Posting & DMs — not wired (need user-context OAuth write credentials)
 
 ## Deployment
 

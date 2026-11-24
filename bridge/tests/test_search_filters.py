@@ -51,6 +51,12 @@ def test_fts_plain():
     assert ids(R.search("alpha")) == ["1", "3", "4"]
 
 
+def test_fts_recent_is_newest_first():
+    assert [t["tweet_id"] for t in R.search("alpha", recent=True)] == ["4", "3", "1"]
+    assert [t["tweet_id"] for t in R.search("alpha", recent=True, limit=2)] == ["4", "3"]
+    assert [t["tweet_id"] for t in R.search("alpha", recent=True, since="2024-06-01")] == ["4", "3"]
+
+
 def test_fts_plus_author():
     assert ids(R.search("alpha", author="repligate")) == ["1", "4"]
 

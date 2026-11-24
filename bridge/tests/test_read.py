@@ -36,7 +36,7 @@ def test_thread_roundtrip():
     tl = repo.get_timeline("repligate", limit=1)
     cid = tl[0]["conversation_id"]
     if cid:
-        thread = repo.get_thread(cid)
+        thread = repo.get_thread(cid)["tweets"]
         assert any(t["conversation_id"] == cid for t in thread)
 
 

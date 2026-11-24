@@ -1,28 +1,29 @@
 {
   "name": "@animalabs/x-mcpl",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "MCPL server for reading X/Twitter through the xgate bridge: tweets, threads, timelines, search, images, and a feed an agent curates.",
   "type": "module",
   "main": "./dist/src/index.js",
-  "types": "./dist/src/index.d.ts",
   "bin": {
     "x-mcpl": "./dist/src/index.js"
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
-    "start": "node --import tsx src/index.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@animalabs/mcpl-core": "file:../mcpl-core-ts"
+    "@animalabs/mcpl-core": "^0.3.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.12",
     "tsx": "^4.7.0",
-    "typescript": "^5.5.0",
-    "@types/node": "^20.0.0"
+    "typescript": "^5.5.0"
   },
   "engines": {
     "node": ">=20.0.0"
-  }
+  },
+  "private": true
 }

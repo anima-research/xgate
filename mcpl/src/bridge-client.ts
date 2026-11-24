@@ -19,6 +19,8 @@ export interface BridgeTweet {
   reply_to_tweet_id: string | null;
   reply_to_username: string | null;
   conversation_id: string | null;
+  /** The tweet this one quotes. Only archive-imported tweets carry it. */
+  quoted_tweet_id?: string | null;
   retweet_count: number;
   favorite_count: number;
   source: string | null;
@@ -41,13 +43,30 @@ export interface BridgeUrl {
   expanded_url: string | null;
 }
 
+/** A profile: X's own when the bridge has fetched it (`source: "x-api"`), otherwise what the cached tweets show. */
 export interface BridgeUser {
   author_id: string | null;
   handle: string | null;
-  cached_tweet_count: number;
-  first_seen: string | null;
-  last_seen: string | null;
   source: string;
+  cached_tweet_count?: number;
+  first_seen?: string | null;
+  last_seen?: string | null;
+  name?: string | null;
+  description?: string | null;
+  followers?: number | null;
+  following?: number | null;
+  tweet_count?: number | null;
+  created_at?: string | null;
+  verified?: boolean;
+  location?: string | null;
+  url?: string | null;
+  fetched_at?: string | null;
+}
+
+/** A thread as the bridge returns it: at most 500 tweets of `count`, oldest first. */
+export interface BridgeThread {
+  count: number;
+  tweets: BridgeTweet[];
 }
 
 export interface BridgeHealth {
@@ -156,14 +175,24 @@ export class BridgeClient {
     return r?.transcription ?? null;
   }
 
-  /** All cached tweets in a conversation, oldest-first. `transcribe` triggers a
-   *  bounded-parallel batch transcription of every image in the thread. */
-  async getThread(conversationId: string, transcribe = false): Promise<BridgeTweet[]> {
-    const qs = transcribe ? '?transcribe=1' : '';
-    const r = await this.get<{ tweets: BridgeTweet[] }>(
-      `/thread/${encodeURIComponent(conversationId)}${qs}`,
-    );
-    return r?.tweets ?? [];
+  /** The cached thread a tweet belongs to, oldest-first: `tweetId` is any tweet
+   *  of it, or its conversation id. `fresh` asks X for the conversation's last
+   *  week first; `transcribe` transcribes every image in what comes back. */
+  async getThread(tweetId: string, opts: { fresh?: boolean; transcribe?: boolean } = {}): Promise<BridgeThread> {
+    const params = new URLSearchParams();
+    if (opts.fresh) params.set('fresh', '1');
+    if (opts.transcribe) params.set('transcribe', '1');
+    const qs = params.toString() ? `?${params}` : '';
+    const r = await this.get<BridgeThread>(`/thread/${encodeURIComponent(tweetId)}${qs}`);
+    return r ?? { count: 0, tweets: [] };
+  }
+
+  /** An image's bytes, as the bridge caches and serves them. null if it has none. */
+  async mediaBytes(mediaId: string): Promise<{ data: Buffer; mimeType: string } | null> {
+    const res = await fetch(this.mediaUrl(mediaId), { headers: this.authHeaders(), signal: AbortSignal.timeout(this.timeoutMs) });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new BridgeError(res.status, await res.text());
+    return { data: Buffer.from(await res.arrayBuffer()), mimeType: res.headers.get('content-type') ?? 'application/octet-stream' };
   }
 
   /** Profile derived from cached tweets (full profile is a later bridge feature). */
@@ -194,6 +223,7 @@ export class BridgeClient {
     if (f.since) qs.set('since', f.since);
     if (f.until) qs.set('until', f.until);
     if (f.tier) qs.set('tier', f.tier);
+    if (f.recent) qs.set('order', 'recent');
     const r = await this.get<{ tweets: BridgeTweet[] }>(`/search?${qs.toString()}`);
     return r?.tweets ?? [];
   }
@@ -218,6 +248,8 @@ export interface SearchFilters {
   until?: string;
   /** Curation tier: spine | cast | context | bridge. */
   tier?: string;
+  /** With a query: newest first instead of best match first. */
+  recent?: boolean;
 }
 
 export interface BridgeThreadPreview {

@@ -1,170 +1,136 @@
 /**
- * Curated feed — a persistent, agent-owned set of sources (user timelines,
- * searches, mentions) with per-source read cursors.
+ * An agent's feed: the sources it follows (accounts, searches, mentions of a
+ * handle), how each is treated, and how far it has read in each.
  *
- * State lives HOST-side: the MCPL host injects the current state into every
- * `tools/call` as `params.state`, and persists whatever `state` checkpoint a
- * tool returns (see x-bridge/DESIGN.md and agent-framework's CheckpointManager).
- * So this module is deliberately PURE — a reducer + renderer over the state
- * object. No I/O, no clock dependence beyond timestamps the caller passes in.
- * The actual tweet fetching lives in handlers.ts (it needs the bridge).
+ * The state lives on this server, one file per agent (FeedStore), so it
+ * survives a restart of either side and asks nothing of the host. The
+ * functions over it are pure.
  */
-
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { BridgeTweet } from './bridge-client.js';
-import { renderTweet, fmtTime } from './render.js';
+import { fmtTime, renderTweet } from './render.js';
 
 export type FeedSourceKind = 'timeline' | 'search' | 'mentions';
+export const SOURCE_KINDS: readonly FeedSourceKind[] = ['timeline', 'search', 'mentions'];
+
+/**
+ * notify  new tweets are sent to the agent as events, and read by that
+ * quiet   new tweets wait for feed_read
+ * muted   kept in the list, left out of feed_read and feed_show's counts
+ */
+export type FeedMode = 'notify' | 'quiet' | 'muted';
+export const FEED_MODES: readonly FeedMode[] = ['notify', 'quiet', 'muted'];
 
 export interface FeedSource {
   id: string;
   kind: FeedSourceKind;
   value: string;
   label?: string;
-  muted?: boolean;
-}
-
-export interface FeedCursor {
-  lastSeenId?: string;
-  lastSeenAt?: string;
+  mode: FeedMode;
 }
 
 export interface FeedState {
-  version: 1;
-  /** Monotonic counter; drives checkpoint id + parent chaining. */
-  seq: number;
   sources: FeedSource[];
-  cursors: Record<string, FeedCursor>;
+  /** per source id: the time of the newest tweet read */
+  readTo: Record<string, string>;
 }
 
-export function emptyState(): FeedState {
-  return { version: 1, seq: 0, sources: [], cursors: {} };
-}
+export const emptyFeed = (): FeedState => ({ sources: [], readTo: {} });
 
-/** Coerce whatever the host injected (undefined / partial / old) into a valid state. */
-export function normalizeState(injected: unknown): FeedState {
-  const s = (injected ?? {}) as Partial<FeedState>;
-  const sources = Array.isArray(s.sources)
-    ? s.sources.filter((x): x is FeedSource => !!x && typeof (x as FeedSource).id === 'string')
-    : [];
-  const cursors = s.cursors && typeof s.cursors === 'object' ? { ...s.cursors } : {};
-  const seq = typeof s.seq === 'number' && s.seq >= 0 ? s.seq : 0;
-  return { version: 1, seq, sources, cursors };
-}
-
-/** Stable id for a source so re-adding the same thing is idempotent. */
+/** The same account or query, however it was typed, is one source. */
 export function sourceId(kind: FeedSourceKind, value: string): string {
-  return `${kind}:${value.replace(/^@/, '').toLowerCase().trim()}`;
+  return `${kind}:${value.replace(/^@/, '').trim().toLowerCase()}`;
 }
 
+/** A source by its id ("timeline:handle") or by its value alone ("@handle", a query). */
 export function findSource(state: FeedState, ref: string): FeedSource | undefined {
-  const r = ref.toLowerCase().replace(/^@/, '').trim();
-  return state.sources.find(
-    (s) => s.id === ref || s.id.toLowerCase() === ref.toLowerCase() ||
-      s.value.toLowerCase().replace(/^@/, '') === r,
-  );
+  const r = ref.trim().toLowerCase();
+  const bare = r.replace(/^@/, '');
+  return state.sources.find((s) => s.id === r) ?? state.sources.find((s) => s.value.toLowerCase() === bare);
 }
 
-// ── Reducers (each returns a NEW state; callers bump() to checkpoint) ──
-
-export function addSource(
-  state: FeedState,
-  input: { kind: FeedSourceKind; value: string; label?: string },
-): { state: FeedState; source: FeedSource; added: boolean } {
+export function addSource(state: FeedState, input: { kind: FeedSourceKind; value: string; label?: string; mode: FeedMode }): { state: FeedState; source: FeedSource; added: boolean } {
   const value = input.value.replace(/^@/, '').trim();
   const id = sourceId(input.kind, value);
   const existing = state.sources.find((s) => s.id === id);
   if (existing) return { state, source: existing, added: false };
-  const source: FeedSource = { id, kind: input.kind, value, label: input.label };
+  const source: FeedSource = { id, kind: input.kind, value, mode: input.mode, ...(input.label ? { label: input.label } : {}) };
   return { state: { ...state, sources: [...state.sources, source] }, source, added: true };
 }
 
-export function removeSource(state: FeedState, ref: string): { state: FeedState; removed: FeedSource | undefined } {
-  const src = findSource(state, ref);
-  if (!src) return { state, removed: undefined };
-  const cursors = { ...state.cursors };
-  delete cursors[src.id];
-  return {
-    state: { ...state, sources: state.sources.filter((s) => s.id !== src.id), cursors },
-    removed: src,
-  };
+export function removeSource(state: FeedState, source: FeedSource): FeedState {
+  const { [source.id]: _gone, ...readTo } = state.readTo;
+  return { sources: state.sources.filter((s) => s.id !== source.id), readTo };
 }
 
-export function setMuted(state: FeedState, ref: string, muted: boolean): { state: FeedState; source: FeedSource | undefined } {
-  const src = findSource(state, ref);
-  if (!src) return { state, source: undefined };
-  return {
-    state: { ...state, sources: state.sources.map((s) => (s.id === src.id ? { ...s, muted } : s)) },
-    source: { ...src, muted },
-  };
+export function setMode(state: FeedState, source: FeedSource, mode: FeedMode): FeedState {
+  return { ...state, sources: state.sources.map((s) => (s.id === source.id ? { ...s, mode } : s)) };
 }
 
-/** Advance a source's cursor to the newest of the given tweets. */
-export function advanceCursor(state: FeedState, sourceId: string, newest: BridgeTweet | undefined): FeedState {
-  if (!newest) return state;
-  return {
-    ...state,
-    cursors: {
-      ...state.cursors,
-      [sourceId]: { lastSeenId: newest.tweet_id, lastSeenAt: newest.created_at ?? undefined },
-    },
-  };
+/** Mark a source read up to the newest of `tweets`. */
+export function markRead(state: FeedState, source: FeedSource, tweets: BridgeTweet[]): FeedState {
+  const newest = tweets.reduce<string>((max, t) => (t.created_at && t.created_at > max ? t.created_at : max), state.readTo[source.id] ?? '');
+  return newest ? { ...state, readTo: { ...state.readTo, [source.id]: newest } } : state;
 }
 
-/** Increment seq — every mutation that should be persisted bumps it. */
-export function bump(state: FeedState): FeedState {
-  return { ...state, seq: state.seq + 1 };
+/** Count a source as read up to now, if it was never read: what it notifies of starts from here. */
+export function startFromNow(state: FeedState, source: FeedSource, now = new Date()): FeedState {
+  return state.readTo[source.id] ? state : { ...state, readTo: { ...state.readTo, [source.id]: now.toISOString() } };
 }
 
-/** Build the StateCheckpoint a stateful tool returns alongside its content. */
-export function checkpointFor(prevSeq: number, newState: FeedState): {
-  checkpoint: string;
-  parent: string | null;
-  data: FeedState;
-} {
-  return {
-    checkpoint: String(newState.seq),
-    parent: prevSeq > 0 ? String(prevSeq) : null,
-    data: newState,
-  };
+/** The tweets posted after what was last read in this source. */
+export function unreadOf(state: FeedState, source: FeedSource, tweets: BridgeTweet[]): BridgeTweet[] {
+  const readTo = state.readTo[source.id];
+  return readTo ? tweets.filter((t) => (t.created_at ?? '') > readTo) : tweets;
 }
 
-/** Tweets newer than a source's cursor (created_at strictly after lastSeenAt). */
-export function newSince(cursor: FeedCursor | undefined, tweets: BridgeTweet[]): BridgeTweet[] {
-  if (!cursor?.lastSeenAt) return tweets;
-  return tweets.filter((t) => (t.created_at ?? '') > cursor.lastSeenAt!);
-}
+export const sourceName = (s: FeedSource) => `${s.kind}:${s.kind === 'search' ? s.value : `@${s.value}`}`;
 
-// ── Rendering ──
-
-export function renderSources(
-  state: FeedState,
-  unread: Record<string, number | undefined>,
-): string {
-  if (!state.sources.length) {
-    return 'feed is empty. Add sources with feed_add (e.g. {kind:"timeline", value:"@handle"}).';
-  }
+export function renderSources(state: FeedState, unread: Record<string, number | undefined>): string {
+  if (!state.sources.length) return 'Your feed has no sources yet.';
   const lines = state.sources.map((s) => {
     const n = unread[s.id];
-    const badge = s.muted ? 'muted' : n === undefined ? '?' : n > 0 ? `${n} new` : 'up to date';
-    const cur = state.cursors[s.id]?.lastSeenAt;
-    const seen = cur ? ` · last seen ${fmtTime(cur)}` : '';
-    const label = s.label ? ` "${s.label}"` : '';
-    return `• ${s.kind}:${s.value}${label} — ${badge}${seen}`;
+    const read = state.readTo[s.id] ? ` · read to ${fmtTime(state.readTo[s.id])}` : ' · not read yet';
+    const news = s.mode === 'muted' || !state.readTo[s.id] ? '' : n === undefined ? ' · could not be checked' : n > 0 ? ` · ${n} unread` : ' · nothing unread';
+    return `${sourceName(s)}${s.label ? ` "${s.label}"` : ''} · ${s.mode}${news}${read}`;
   });
-  return `feed — ${state.sources.length} source(s):\n${lines.join('\n')}`;
+  return `${state.sources.length} source${state.sources.length === 1 ? '' : 's'} in your feed:\n${lines.join('\n')}`;
 }
 
-/** Render fetched-new items grouped by source, each block newest-first. */
-export function renderItems(
-  groups: { source: FeedSource; tweets: BridgeTweet[] }[],
-): string {
-  const nonEmpty = groups.filter((g) => g.tweets.length);
-  if (!nonEmpty.length) return 'No new items across the feed.';
-  const total = nonEmpty.reduce((a, g) => a + g.tweets.length, 0);
-  const blocks = nonEmpty.map((g) => {
-    const head = `── ${g.source.kind}:${g.source.value} (${g.tweets.length} new) ──`;
-    const body = g.tweets.map((t, i) => renderTweet(t, { index: i + 1 })).join('\n\n');
-    return `${head}\n${body}`;
-  });
-  return `${total} new item(s) across ${nonEmpty.length} source(s):\n\n${blocks.join('\n\n')}`;
+export function renderItems(groups: Array<{ source: FeedSource; tweets: BridgeTweet[] }>, what: string): string {
+  const withNews = groups.filter((g) => g.tweets.length);
+  if (!withNews.length) return groups.length ? `Nothing ${what} in ${groups.length === 1 ? sourceName(groups[0]!.source) : `the ${groups.length} sources read`}.` : 'No source of your feed matches.';
+  return withNews.map((g) => {
+    const head = `── ${sourceName(g.source)}${g.source.label ? ` "${g.source.label}"` : ''} · ${g.tweets.length} ${what} ──`;
+    return `${head}\n${g.tweets.map((t, i) => renderTweet(t, { index: i + 1 })).join('\n\n')}`;
+  }).join('\n\n');
+}
+
+/** One JSON file per agent in `dir`. */
+export class FeedStore {
+  private readonly cache = new Map<string, FeedState>();
+
+  constructor(private readonly dir: string) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+  }
+
+  private file(client: string): string {
+    return join(this.dir, `feed-${client.replace(/[^A-Za-z0-9._@-]/g, '_')}.json`);
+  }
+
+  get(client: string): FeedState {
+    let state = this.cache.get(client);
+    if (!state) {
+      const file = this.file(client);
+      state = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as FeedState) : emptyFeed();
+      this.cache.set(client, state);
+    }
+    return state;
+  }
+
+  set(client: string, state: FeedState): void {
+    this.cache.set(client, state);
+    writeFileSync(this.file(client), JSON.stringify(state, null, 1), { mode: 0o600 });
+  }
 }

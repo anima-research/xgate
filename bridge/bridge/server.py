@@ -179,11 +179,11 @@ class Handler(BaseHTTPRequestHandler):
         media = _repo.get_media(media_id)
         if not media:
             return 404, {"error": "unknown media", "media_id": media_id}
-        # Cache-only callers: serve an existing transcription, never pay for a new one.
+        # An existing transcription is served to anyone; only a new one is paid for.
+        cached = media.get("transcription")
+        if cached and not _truthy(qs, "fresh"):
+            return 200, {"media_id": media_id, "transcription": cached, "cached": True}
         if not config.request_allows_spend():
-            cached = media.get("transcription")
-            if cached:
-                return 200, {"media_id": media_id, "transcription": cached, "cached": True}
             return 403, {"error": "transcription requires a fetch-enabled token", "media_id": media_id}
         if not config.TRANSCRIBE_ENABLED:
             return 503, {"error": "transcription disabled (no Anthropic credential)", "media_id": media_id}
@@ -229,17 +229,19 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def h_thread(self, m, qs):
+        # Any tweet of the thread, or its conversation id. A live refresh asks X
+        # by conversation id, which a cached tweet may carry.
         cid = m.group("cid")
         if _truthy(qs, "fresh"):
-            _cache.refresh(f"thread:{cid}", force=True)
-        tweets = _repo.get_thread(cid)
-        tweets = self._maybe_transcribe(tweets, qs)
-        return 200, {"conversation_id": cid, "count": len(tweets), "tweets": tweets}
+            _cache.refresh(f"thread:{_repo.conversation_of(cid) or cid}", force=True)
+        thread = _repo.get_thread(cid)
+        tweets = self._maybe_transcribe(thread["tweets"], qs)
+        return 200, {"conversation_id": cid, "count": thread["count"], "tweets": tweets}
 
     def h_thread_preview(self, m, qs):
         cid = m.group("cid")
         if _truthy(qs, "fresh"):
-            _cache.refresh(f"thread:{cid}", force=True)
+            _cache.refresh(f"thread:{_repo.conversation_of(cid) or cid}", force=True)
         stats = _repo.thread_stats(cid)
         if not stats["count"]:
             return 404, {"cached": False, "conversation_id": cid}
@@ -274,7 +276,8 @@ class Handler(BaseHTTPRequestHandler):
         if not (q or author or since or until or tier):
             return 400, {"error": "provide q and/or a filter (author, since, until, tier)"}
         tweets = _cache.search(q, limit=_int(qs, "limit", 50), fresh=_truthy(qs, "fresh"),
-                               author=author, since=since, until=until, tier=tier)
+                               author=author, since=since, until=until, tier=tier,
+                               recent=(qs.get("order") or [""])[0] == "recent")
         tweets = self._maybe_transcribe(tweets, qs)
         return 200, {"query": q, "count": len(tweets), "tweets": tweets}
 
